@@ -346,7 +346,7 @@ const buildEntryHTML = (entry) => {
 const callClaude = async (systemPrompt, userMessage, maxTokens=1000) => {
   const response = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "xapikey": "skkey" },
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: maxTokens,
