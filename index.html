@@ -81,15 +81,23 @@ textarea:focus,input:focus{outline:none;}
 .entry-page::before{
   content:'';position:absolute;inset:0;
   background-image:repeating-linear-gradient(to bottom,transparent 0px,transparent 31px,var(--rule) 31px,var(--rule) 32px);
-  background-position:0 108px;pointer-events:none;opacity:0.5;
+  background-position:0 112px;pointer-events:none;opacity:0.5;
 }
 .entry-page::after{
-  content:'';position:absolute;top:0;bottom:0;left:72px;width:1px;
+  content:'';position:absolute;top:0;bottom:0;left:78px;width:1px;
   background:var(--red-margin);
 }
+.entry-body p{
+  font-size:16.5px;line-height:1.95;color:var(--ink);font-family:'Lora',Georgia,serif;
+  font-weight:400;margin-bottom:24px;
+}
+.entry-body p:last-child{margin-bottom:0;}
+.entry-body p.emphasis{font-style:italic;color:var(--ink-soft);}
+.entry-body p.quiet{font-size:15px;color:var(--ink-soft);font-style:italic;}
 @media(max-width:520px){
   .entry-page::after{left:0;opacity:0;}
-  .entry-page{padding-left:28px !important;}
+  .entry-page{padding:44px 28px 56px !important;}
+  .entry-body p{font-size:15.5px;}
 }
 </style>
 </head>
@@ -377,7 +385,7 @@ const callClaude = async (systemPrompt, userMessage, maxTokens=1000) => {
 
 const shapeEntry = async (rawText) => {
   if (!rawText || !rawText.trim()) throw new Error("nothing to shape");
-  const system = `You are a journal editor with a precise, literary sensibility. The person has written or spoken raw thoughts. Your job is to shape them into a journal entry that feels true — not cleaned up, not therapized, not made prettier than it is.
+  const system = `You are a journal editor with a precise, literary sensibility. The person has written or spoken raw thoughts — often messy, repetitive, spoken aloud. Your job is to shape them into a journal entry that feels true to THEM — not cleaned up into something generic, not therapized, not made more poetic than they are.
 
 Return ONLY valid JSON (no markdown, no backticks, no preamble):
 {
@@ -388,13 +396,14 @@ Return ONLY valid JSON (no markdown, no backticks, no preamble):
 }
 
 SHAPING RULES — follow these exactly:
-- Open with a short punch. One sentence, maybe two. The thing they said first or the thing underneath everything. Don't warm up slowly.
+- Keep their specific details. If they mention why they built something, a reel they saw, a specific number, a specific person — KEEP IT. These are the soul of the entry, not noise to trim.
+- Preserve their exact words and phrases where they're strong. "Three, four inches past the surface" is theirs — don't paraphrase it into something blander.
+- Open with a short punch. The thing they led with or the thing underneath everything. Don't warm up slowly.
 - Let a one-line paragraph exist. Silence on the page is part of the voice.
 - Use *asterisks* to italicize a line only when it earns it — the sentence that holds the emotional weight. Maximum 2 italicized moments per entry.
-- Preserve their exact words and phrases where they're strong. Don't replace vivid language with softer language.
 - Don't add insight they didn't have. Don't explain what they felt. Let it stay incomplete if it's incomplete.
 - No therapy-speak. No 'it seems like', 'perhaps', 'it's worth noting'. No conclusions that weren't in the original.
-- 3-6 paragraphs. The shorter the better if short is true.
+- 3-7 paragraphs. Don't compress so hard that you lose their context and warmth — if the raw input is long and rich, the shaped entry should be too.
 - The last line should land — not resolve, not summarize, just land.
 - ONLY return the JSON object, nothing else.`;
 
