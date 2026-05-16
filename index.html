@@ -1510,11 +1510,21 @@ function EntryView({ entry, allEntries, onBack, onDelete, onExport, onEdit }) {
 
           <div>
             {paragraphs.map((p, i) => {
-              const isEmphasis = p.startsWith("*") && p.endsWith("*");
+              const isEmphasis = p.startsWith("*") && p.endsWith("*") && (p.match(/\*/g)||[]).length === 2;
               const text = isEmphasis ? p.slice(1,-1) : p;
+              // Render inline *italic* spans within a paragraph
+              const renderInline = (str) => {
+                const parts = str.split(/(\*[^*]+\*)/g);
+                if (parts.length === 1) return str;
+                return parts.map((part, j) => {
+                  if (part.startsWith("*") && part.endsWith("*"))
+                    return <em key={j} style={{ fontStyle:"italic", color:"var(--ink-soft)" }}>{part.slice(1,-1)}</em>;
+                  return part;
+                });
+              };
               return (
                 <p key={i} style={{ fontSize:16.5, lineHeight:1.95, color: isEmphasis ? "var(--ink-soft)" : "var(--ink)", fontStyle: isEmphasis ? "italic" : "normal", marginBottom:24, fontFamily:"'Lora',Georgia,serif" }}>
-                  {text}
+                  {isEmphasis ? text : renderInline(text)}
                 </p>
               );
             })}
