@@ -1358,11 +1358,10 @@ function WriteView({ allEntries, editEntry, onSave, onCancel, showBanner }) {
       createdAt: editEntry?.createdAt || now,
       updatedAt: now,
       raw: raw.trim(),
-      shaped: shaped.trim() || undefined,
-      heading: heading.trim() || undefined,
-      mood: mood || undefined,
+      shaped: mode === "shaped" ? (shaped.trim() || undefined) : undefined,
+      heading: mode === "shaped" ? (heading.trim() || undefined) : undefined,
+      mood: mode === "shaped" ? (mood || undefined) : undefined,
     };
-    // entry label is computed dynamically, not stored
     onSave(entry);
   };
 
@@ -1486,15 +1485,18 @@ function EntryView({ entry, allEntries, onBack, onDelete, onExport, onEdit }) {
       {/* Page */}
       <div className="entry-page page-reveal" style={{ width:"100%", maxWidth:600, padding:"56px 52px 72px 96px", borderRadius:2 }}>
         <div style={{ position:"relative", zIndex:1 }}>
+          {/* Label + date/time */}
           <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:12, fontWeight:300, letterSpacing:"0.14em", color:"var(--ink-faint)", textTransform:"uppercase", marginBottom:6 }}>{label}</div>
-          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:12, fontWeight:300, letterSpacing:"0.10em", color:"var(--ink-faint)", marginBottom:20 }}>{formatDate(entry.createdAt)} · {formatTime(entry.createdAt)}</div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:13, fontWeight:300, letterSpacing:"0.12em", color:"var(--ink-faint)", textTransform:"uppercase", marginBottom:32 }}>{formatDate(entry.createdAt)} · {formatTime(entry.createdAt)}</div>
 
+          {/* Mood */}
           {entry.mood && (
-            <div style={{ fontSize:11, letterSpacing:"0.18em", color:MOOD_COLORS[entry.mood]||"var(--ink-faint)", textTransform:"uppercase", fontFamily:"'Cormorant Garamond',serif", marginBottom:16 }}>{entry.mood}</div>
+            <div style={{ fontSize:11, letterSpacing:"0.18em", color:MOOD_COLORS[entry.mood]||"var(--ink-faint)", textTransform:"uppercase", fontFamily:"'Cormorant Garamond',serif", marginBottom:10 }}>{entry.mood}</div>
           )}
 
+          {/* Heading — large italic like reference */}
           {entry.heading && (
-            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:11, fontWeight:300, letterSpacing:"0.2em", color:"var(--ink-faint)", textTransform:"uppercase", marginBottom:28 }}>{entry.heading}</div>
+            <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:22, fontWeight:300, fontStyle:"italic", color:"var(--ink-soft)", lineHeight:1.55, marginBottom:36, paddingBottom:28, borderBottom:`1px solid var(--rule)` }}>{entry.heading}</div>
           )}
 
           <div>
@@ -1502,7 +1504,7 @@ function EntryView({ entry, allEntries, onBack, onDelete, onExport, onEdit }) {
               const isEmphasis = p.startsWith("*") && p.endsWith("*");
               const text = isEmphasis ? p.slice(1,-1) : p;
               return (
-                <p key={i} style={{ fontSize:16, lineHeight:1.95, color: isEmphasis ? "var(--ink-soft)" : "var(--ink)", fontStyle: isEmphasis ? "italic" : "normal", marginBottom:22, fontFamily:"'Lora',Georgia,serif" }}>
+                <p key={i} style={{ fontSize:16.5, lineHeight:1.95, color: isEmphasis ? "var(--ink-soft)" : "var(--ink)", fontStyle: isEmphasis ? "italic" : "normal", marginBottom:24, fontFamily:"'Lora',Georgia,serif" }}>
                   {text}
                 </p>
               );
