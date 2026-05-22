@@ -126,22 +126,23 @@ const SIGNATURE_KEY  = "myjournal_signature_v1";
 const SPEECH_LANG_KEY= "myjournal_speech_lang_v1";
 const GEMINI_MODEL   = "gemini-2.5-pro";
 const GEMINI_KEY_STORAGE = "myjournal_gemini_key_v1";
+// Paste your key here — this survives site-data clears since it lives in the file
+const GEMINI_KEY_EMBEDDED = "PASTE_YOUR_KEY_HERE";
+
 const isValidGeminiKey = (k) => {
   if (!k || typeof k !== "string") return false;
   const t = k.trim();
-  // Gemini keys are ~39 chars starting with "AIza", no whitespace, no HTML tags
   return t.length > 10 && t.length < 200 && !t.includes("<") && !t.includes(">") && !t.includes(" ") && /^[A-Za-z0-9_\-]+$/.test(t);
 };
 const getGeminiKey = () => {
   try {
-    const raw = localStorage.getItem(GEMINI_KEY_STORAGE) || "";
-    if (!isValidGeminiKey(raw)) {
-      // Corrupted key in storage — silently clear it
-      if (raw) { try { localStorage.removeItem(GEMINI_KEY_STORAGE); } catch {} }
-      return "";
-    }
-    return raw.trim();
-  } catch { return ""; }
+    const stored = (localStorage.getItem(GEMINI_KEY_STORAGE) || "").trim();
+    if (isValidGeminiKey(stored)) return stored;
+    if (isValidGeminiKey(GEMINI_KEY_EMBEDDED)) return GEMINI_KEY_EMBEDDED.trim();
+    return "";
+  } catch {
+    return isValidGeminiKey(GEMINI_KEY_EMBEDDED) ? GEMINI_KEY_EMBEDDED.trim() : "";
+  }
 };
 const saveGeminiKey = (k) => {
   try {
@@ -149,7 +150,8 @@ const saveGeminiKey = (k) => {
     if (!clean) { localStorage.removeItem(GEMINI_KEY_STORAGE); return; }
     if (!isValidGeminiKey(clean)) throw new Error("invalid key format");
     localStorage.setItem(GEMINI_KEY_STORAGE, clean);
-  } catch {} };
+  } catch {}
+};
 
 const MOOD_COLORS = {
   reflective:"#7a8b9a", raw:"#c45880", angry:"#b85030",
@@ -661,24 +663,32 @@ const exportAllMarkdown = async (entries, signature) => {
 
 // Collect all meta from current app state refs (called by auto-push)
 // Returns a plain object safe to JSON.stringify — NOW includes draft, notes, customTags, mapSnapshots
-const collectMeta = (refs) => ({
-  stickyNotes:   refs.stickyNotes   || [],
-  signature:     refs.signature     || "— A.",
-  selfData:      refs.selfData      || null,
-  soulProfile:   refs.soulProfile   || null,
-  soulEnabled:   refs.soulEnabled   ?? true,
-  feedback:      refs.feedback      || [],
-  constellations:refs.constellations|| [],
-  soulQuestion:  refs.soulQuestion  || null,
-  speechLang:    refs.speechLang    || "en-US",
-  activeTheme:   refs.activeTheme   || "parchment",
-  cover:         refs.cover         || null,
-  // Previously missing — now synced:
-  draft:         refs.draft         || null,
-  notes:         refs.notes         || [],
-  customTags:    refs.customTags    || [],
-  mapSnapshots:  refs.mapSnapshots  || [],
-});
+const collectMeta = (refs) => {
+  // Strip raw base64 imageData from cover — too large for meta_json.
+  // The cover image is uploaded to Supabase Storage separately; coverImageUrl is the public URL.
+  let cover = refs.cover || null;
+  if (cover && cover.imageData && cover.imageData.startsWith("data:")) {
+    const { imageData: _dropped, ...coverRest } = cover;
+    cover = coverRest; // keep title, subtitle, bgColor, textColor, coverImageUrl
+  }
+  return {
+    stickyNotes:   refs.stickyNotes   || [],
+    signature:     refs.signature     || "— A.",
+    selfData:      refs.selfData      || null,
+    soulProfile:   refs.soulProfile   || null,
+    soulEnabled:   refs.soulEnabled   ?? true,
+    feedback:      refs.feedback      || [],
+    constellations:refs.constellations|| [],
+    soulQuestion:  refs.soulQuestion  || null,
+    speechLang:    refs.speechLang    || "en-US",
+    activeTheme:   refs.activeTheme   || "parchment",
+    cover,
+    draft:         refs.draft         || null,
+    notes:         refs.notes         || [],
+    customTags:    refs.customTags    || [],
+    mapSnapshots:  refs.mapSnapshots  || [],
+  };
+};
 const formatDate = (ts) => {
   try {
     return new Date(ts).toLocaleDateString("en-US", { month:"long", day:"numeric", year:"numeric" });
@@ -1084,7 +1094,20 @@ function App() {
           setActiveTheme(remoteMeta.activeTheme); saveThemePref(remoteMeta.activeTheme); applyTheme(remoteMeta.activeTheme);
         }
         if (remoteMeta.cover) {
-          setCover(remoteMeta.cover); saveCover(remoteMeta.cover);
+          // If there's a cloud image URL but no local base64, fetch and restore it
+          const remoteCover = remoteMeta.cover;
+          if (remoteCover.coverImageUrl && !remoteCover.imageData) {
+            fetch(remoteCover.coverImageUrl)
+              .then(r => r.blob())
+              .then(blob => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); }))
+              .then(dataUrl => {
+                const restored = { ...remoteCover, imageData: dataUrl };
+                setCover(restored); saveCover(restored);
+              })
+              .catch(() => { setCover(remoteCover); saveCover(remoteCover); });
+          } else {
+            setCover(remoteCover); saveCover(remoteCover);
+          }
         }
         // New fields — restore if present in cloud and not already set locally
         if (remoteMeta.draft && !localStorage.getItem(DRAFT_KEY)) {
@@ -1524,7 +1547,19 @@ function App() {
       {view === "write"    && <ErrorBoundary key="write"><WriteView allEntries={entries} onSave={(e)=>{ saveEntry(e); go("open", e.id); }} onCancel={()=>go("index")} showBanner={showBanner} speechLang={speechLang}/></ErrorBoundary>}
       {view === "open"     && active && <ErrorBoundary key={`open-${active.id}`}><EntryView entry={active} allEntries={entries} lockConfig={lockConfig} signature={signature} syncConfig={syncConfig} onSave={saveEntry} onBack={()=>go("index")} onDelete={()=>deleteEntry(active.id)} onExport={()=>exportEntryHTML(active)} onEdit={()=>go("write_edit", active.id)} onThread={()=>go("thread", active.id)} onPin={()=>pinEntry(active.id)} onToggleLock={()=>toggleEntryLock(active.id)} onSaveWitness={(e)=>{ saveEntry(e); }} speechLang={speechLang}/></ErrorBoundary>}
       {view === "write_edit" && active && <ErrorBoundary key={`edit-${active.id}`}><WriteView allEntries={entries} editEntry={active} onSave={(e)=>{ saveEntry(e); go("open", e.id); }} onCancel={()=>go("open", active.id)} showBanner={showBanner} speechLang={speechLang}/></ErrorBoundary>}
-      {view === "settings" && <ErrorBoundary key="settings"><SettingsView syncConfig={syncConfig} lockConfig={lockConfig} signature={signature} speechLang={speechLang} activeTheme={activeTheme} cover={cover} onSave={(cfg)=>{ setSyncConfig(cfg); saveSyncConfig(cfg); go("index"); }} onSaveLock={(cfg)=>{ setLockConfig(cfg); saveLockConfig(cfg); }} onSaveSignature={(sig)=>setSignature(sig)} onSaveSpeechLang={(l)=>setSpeechLang(l)} onSaveTheme={(t)=>setActiveTheme(t)} onSaveCover={(c)=>setCover(c)} onBack={()=>go("index")} exportJSON={exportJSON} exportMarkdown={exportMarkdown} importJSON={importJSON} showBanner={showBanner} showConfirm={showConfirm}/></ErrorBoundary>}
+      {view === "settings" && <ErrorBoundary key="settings"><SettingsView syncConfig={syncConfig} lockConfig={lockConfig} signature={signature} speechLang={speechLang} activeTheme={activeTheme} cover={cover} onSave={(cfg)=>{ setSyncConfig(cfg); saveSyncConfig(cfg); go("index"); }} onSaveLock={(cfg)=>{ setLockConfig(cfg); saveLockConfig(cfg); }} onSaveSignature={(sig)=>setSignature(sig)} onSaveSpeechLang={(l)=>setSpeechLang(l)} onSaveTheme={(t)=>setActiveTheme(t)} onSaveCover={async (c)=>{
+              if (c && c.imageData && c.imageData.startsWith("data:") && syncConfig) {
+                try {
+                  const ext = c.imageData.startsWith("data:image/png") ? "png" : "jpg";
+                  const fileName = "cover_" + Date.now() + "." + ext;
+                  const url = await uploadImageToSupabase(syncConfig, c.imageData, fileName);
+                  setCover({ ...c, coverImageUrl: url });
+                  saveCover({ ...c, coverImageUrl: url });
+                  return;
+                } catch(e) { console.warn("cover image upload failed:", e.message); }
+              }
+              setCover(c); saveCover(c);
+            }} onBack={()=>go("index")} exportJSON={exportJSON} exportMarkdown={exportMarkdown} importJSON={importJSON} showBanner={showBanner} showConfirm={showConfirm}/></ErrorBoundary>}
       {view === "burn"     && <ErrorBoundary key="burn"><BurnView onBack={()=>go("index")} onSave={(e)=>{ saveEntry(e); go("index"); }} showBanner={showBanner} speechLang={speechLang}/></ErrorBoundary>}
       {view === "calendar" && <ErrorBoundary key="calendar"><CalendarView entries={entries} onOpen={id=>go("open",id)} onBack={()=>go("index")}/></ErrorBoundary>}
       {view === "thread"   && active && <ErrorBoundary key={`thread-${active.id}`}><ThreadView entry={active} allEntries={entries} onBack={()=>go("open",active.id)} onOpen={id=>go("open",id)}/></ErrorBoundary>}
@@ -4139,16 +4174,27 @@ function SettingsView({ syncConfig, lockConfig, signature, speechLang, activeThe
             ✗ {geminiKeyError}
           </div>
         )}
-        {!geminiKeyError && getGeminiKey() ? (
-          <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--ink-faint)", display:"flex", alignItems:"center", gap:8 }}>
-            <span style={{ color:"var(--mood-clear)" }}>✓ key saved</span>
-            <button onClick={() => { saveGeminiKey(""); setGeminiKey(""); setGeminiKeyError(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
-          </div>
-        ) : !geminiKeyError ? (
-          <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"#b85030", fontStyle:"italic" }}>
-            no key set — AI features (shaping, the self, monthly summary) won't work
-          </div>
-        ) : null}
+        {!geminiKeyError && (() => {
+          const stored = (typeof localStorage !== "undefined" && localStorage.getItem(GEMINI_KEY_STORAGE) || "").trim();
+          const hasStored = isValidGeminiKey(stored);
+          const hasEmbedded = isValidGeminiKey(GEMINI_KEY_EMBEDDED);
+          if (hasStored) return (
+            <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--ink-faint)", display:"flex", alignItems:"center", gap:8 }}>
+              <span style={{ color:"var(--mood-clear)" }}>✓ key saved in app</span>
+              <button onClick={() => { saveGeminiKey(""); setGeminiKey(hasEmbedded ? GEMINI_KEY_EMBEDDED : ""); setGeminiKeyError(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
+            </div>
+          );
+          if (hasEmbedded) return (
+            <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--mood-clear)", fontStyle:"italic" }}>
+              ✓ using embedded key — AI is ready, no re-entry needed
+            </div>
+          );
+          return (
+            <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"#b85030", fontStyle:"italic" }}>
+              no key set — AI features won't work
+            </div>
+          );
+        })()}
       </Section>
 
       {/* Supabase sync */}
@@ -5228,6 +5274,8 @@ const aiNodeInsight = async (node, connectedNodes, journalEntries, soulProfile) 
 
 function TheSelfView({ entries, onBack }) {
   const [data, setData] = React.useState(loadSelf);
+  const [undoNode, setUndoNode] = React.useState(null); // { node, edges }
+  const undoNodeTimerRef = React.useRef(null);
   const [positions, setPositions] = React.useState({});
   const [selectedId, setSelectedId] = React.useState(null);
   const [focusId, setFocusId] = React.useState(null);
@@ -5692,14 +5740,31 @@ function TheSelfView({ entries, onBack }) {
   }, [draggingId, canvasSize]);
 
   const deleteNode = (id) => {
-    // Log rejected AI-suggested edges as feedback
     setData(prev => {
-      const rejectedEdges = prev.edges.filter(e => (e.from===id||e.to===id) && e.aiSuggested);
+      const node = prev.nodes.find(n=>n.id===id);
+      const removedEdges = prev.edges.filter(e=>e.from===id||e.to===id);
+      const rejectedEdges = removedEdges.filter(e=>e.aiSuggested);
       rejectedEdges.forEach(e => logEdgeFeedback(e, "rejected"));
+      // Save for undo
+      if (node) {
+        setUndoNode({ node, edges: removedEdges });
+        clearTimeout(undoNodeTimerRef.current);
+        undoNodeTimerRef.current = setTimeout(() => setUndoNode(null), 8000);
+      }
       return { nodes:prev.nodes.filter(n=>n.id!==id), edges:prev.edges.filter(e=>e.from!==id&&e.to!==id) };
     });
     if (selectedId===id) setSelectedId(null);
     if (focusId===id) setFocusId(null);
+  };
+
+  const undoDeleteNode = () => {
+    if (!undoNode) return;
+    clearTimeout(undoNodeTimerRef.current);
+    setData(prev => ({
+      nodes: [...prev.nodes, undoNode.node],
+      edges: [...prev.edges, ...undoNode.edges.filter(e => prev.nodes.some(n=>n.id===e.from) && prev.nodes.some(n=>n.id===e.to) || e.from===undoNode.node.id || e.to===undoNode.node.id)],
+    }));
+    setUndoNode(null);
   };
 
   const deleteEdge = (edgeId) => {
@@ -5717,7 +5782,7 @@ function TheSelfView({ entries, onBack }) {
     setData(prev => ({
       ...prev,
       nodes: prev.nodes.map(n => n.id === editingNode.id
-        ? { ...n, name, category: editingNode.category, note: editingNode.note.trim() || undefined, updatedAt: Date.now() }
+        ? { ...n, name, category: editingNode.category, note: editingNode.note.trim() || undefined, imageData: editingNode.imageData || undefined, updatedAt: Date.now() }
         : n
       )
     }));
@@ -5925,7 +5990,7 @@ function TheSelfView({ entries, onBack }) {
             )}
             <div style={{ display:"flex", gap:16, alignItems:"center", flexShrink:0, marginLeft: selected.imageData ? 12 : 0 }}>
               <button onClick={()=>setFocusId(focusId===selected.id?null:selected.id)} style={{ background:"none", border:"none", color:"rgba(250,247,242,0.35)", cursor:"pointer", fontFamily:"'Cormorant Garamond',serif", fontSize:12, letterSpacing:"0.06em", padding:0 }}>{focusId===selected.id?"full map":"focus"}</button>
-              <button onClick={()=>setEditingNode(editingNode?.id===selected.id ? null : { id:selected.id, name:selected.name, category:selected.category||"other", note:selected.note||"" })} style={{ background:"none", border:"none", color: editingNode?.id===selected.id ? "rgba(176,125,82,0.9)" : "rgba(250,247,242,0.35)", cursor:"pointer", fontFamily:"'Cormorant Garamond',serif", fontSize:12, letterSpacing:"0.06em", padding:0 }}>edit</button>
+              <button onClick={()=>setEditingNode(editingNode?.id===selected.id ? null : { id:selected.id, name:selected.name, category:selected.category||"other", note:selected.note||"", imageData:selected.imageData||null })} style={{ background:"none", border:"none", color: editingNode?.id===selected.id ? "rgba(176,125,82,0.9)" : "rgba(250,247,242,0.35)", cursor:"pointer", fontFamily:"'Cormorant Garamond',serif", fontSize:12, letterSpacing:"0.06em", padding:0 }}>edit</button>
               <button onClick={()=>deleteNode(selected.id)} style={{ background:"none", border:"none", color:"rgba(180,60,50,0.6)", cursor:"pointer", fontFamily:"'Cormorant Garamond',serif", fontSize:12, padding:0 }}>delete</button>
               <button onClick={()=>{ setSelectedId(null); setEditingNode(null); }} style={{ background:"none", border:"none", color:"rgba(250,247,242,0.3)", cursor:"pointer", fontSize:18, padding:0, lineHeight:1 }}>×</button>
             </div>
@@ -5968,6 +6033,44 @@ function TheSelfView({ entries, onBack }) {
                   rows={2}
                   style={{ width:"100%", background:"transparent", border:"none", borderBottom:"1px solid rgba(250,247,242,0.1)", padding:"4px 0", fontFamily:"'Lora',serif", fontSize:13, color:"rgba(250,247,242,0.5)", outline:"none", resize:"none" }}
                 />
+              </div>
+              {/* Image upload */}
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:10, letterSpacing:"0.12em", color:"rgba(250,247,242,0.3)", textTransform:"uppercase", marginBottom:6 }}>image</div>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  {editingNode.imageData && (
+                    <div style={{ width:40, height:40, borderRadius:6, overflow:"hidden", flexShrink:0, border:"1px solid rgba(250,247,242,0.12)" }}>
+                      <img src={editingNode.imageData} style={{ width:"100%", height:"100%", objectFit:"cover" }} alt="" />
+                    </div>
+                  )}
+                  <label style={{ cursor:"pointer", fontFamily:"'Cormorant Garamond',serif", fontSize:11, color:"rgba(176,125,82,0.7)", letterSpacing:"0.06em", border:"1px solid rgba(176,125,82,0.3)", borderRadius:6, padding:"4px 12px" }}>
+                    {editingNode.imageData ? "change image" : "+ add image"}
+                    <input type="file" accept="image/*" style={{ display:"none" }} onChange={e=>{
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      const reader = new FileReader();
+                      reader.onload = ev => {
+                        // Resize to max 400px to keep storage small
+                        const img = new Image();
+                        img.onload = () => {
+                          const max = 400;
+                          const scale = Math.min(1, max/Math.max(img.width, img.height));
+                          const canvas = document.createElement("canvas");
+                          canvas.width = img.width * scale;
+                          canvas.height = img.height * scale;
+                          canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+                          setEditingNode(prev => ({ ...prev, imageData: canvas.toDataURL("image/jpeg", 0.82) }));
+                        };
+                        img.src = ev.target.result;
+                      };
+                      reader.readAsDataURL(file);
+                      e.target.value = "";
+                    }}/>
+                  </label>
+                  {editingNode.imageData && (
+                    <button onClick={()=>setEditingNode(prev=>({...prev,imageData:null}))} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(250,247,242,0.25)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0 }}>× remove</button>
+                  )}
+                </div>
               </div>
               <div style={{ display:"flex", gap:12, justifyContent:"flex-end" }}>
                 <button onClick={()=>setEditingNode(null)} style={{ background:"none", border:"none", cursor:"pointer", color:"rgba(250,247,242,0.25)", fontFamily:"'Cormorant Garamond',serif", fontSize:12, letterSpacing:"0.06em", padding:0 }}>cancel</button>
@@ -6638,6 +6741,13 @@ function TheSelfView({ entries, onBack }) {
           </div>
         </>
       )}
+    {/* undo node delete toast — outside selection panel so it persists after deselect */}
+    {undoNode && (
+      <div style={{ position:"fixed", bottom:20, left:"50%", transform:"translateX(-50%)", background:"var(--ink)", color:"var(--page)", padding:"10px 18px", borderRadius:20, fontFamily:"'Cormorant Garamond',serif", fontSize:13, letterSpacing:"0.04em", zIndex:9999, display:"flex", alignItems:"center", gap:14, whiteSpace:"nowrap", boxShadow:"0 4px 20px rgba(43,32,22,0.25)" }}>
+        node deleted
+        <button onClick={undoDeleteNode} style={{ background:"none", border:"1px solid rgba(250,247,242,0.4)", borderRadius:10, padding:"3px 12px", color:"var(--page)", fontFamily:"'Cormorant Garamond',serif", fontSize:13, cursor:"pointer", letterSpacing:"0.06em" }}>undo</button>
+      </div>
+    )}
     </div>
   );
 }
