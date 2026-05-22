@@ -124,7 +124,8 @@ const NOTES_KEY      = "myjournal_notes_v1";
 const DRAFT_KEY      = "myjournal_draft_v1";
 const SIGNATURE_KEY  = "myjournal_signature_v1";
 const SPEECH_LANG_KEY= "myjournal_speech_lang_v1";
-const GEMINI_MODEL   = "gemini-2.5-pro";
+const GEMINI_MODEL_PRO   = "gemini-2.5-pro";   // deep reasoning: fingerprint, soul, shaping
+const GEMINI_MODEL_FLASH = "gemini-2.0-flash"; // fast mechanical: edge labels, burn witness, soul question
 const GEMINI_KEY_STORAGE = "myjournal_gemini_key_v1";
 
 const isValidGeminiKey = (k) => {
@@ -774,21 +775,27 @@ const buildEntryHTML = (entry, signature="— A.") => {
 
 // ─── CLAUDE API ───────────────────────────────────────────────────────────────
 // ─── GEMINI AI WRAPPER ────────────────────────────────────────────────────────
-const callClaude = async (systemPrompt, userMessage, maxTokens=1000) => {
+// Global queue to serialize pro-model calls — prevents burst 429s
+let _proQueue = Promise.resolve();
+const _enqueueProCall = (fn) => {
+  _proQueue = _proQueue.then(() => fn()).catch(() => fn());
+  return _proQueue;
+};
+
+const _callGeminiRaw = async (model, systemPrompt, userMessage, maxTokens=1000) => {
   const apiKey = getGeminiKey();
   if (!apiKey) throw new Error("no-gemini-key — add your Gemini key in Settings");
+  const body = systemPrompt
+    ? { system_instruction: { parts: [{ text: systemPrompt }] }, contents: [{ role: "user", parts: [{ text: userMessage }] }], generationConfig: { maxOutputTokens: maxTokens } }
+    : { contents: [{ role: "user", parts: [{ text: userMessage }] }], generationConfig: { maxOutputTokens: maxTokens } };
   const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemPrompt }] },
-        contents: [{ role: "user", parts: [{ text: userMessage }] }],
-        generationConfig: { maxOutputTokens: maxTokens },
-      }),
-    }
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }
   );
+  if (res.status === 429) {
+    const err = await res.text();
+    throw Object.assign(new Error(`rate-limited`), { status: 429, raw: err });
+  }
   if (!res.ok) {
     const err = await res.text();
     throw new Error(`Gemini error ${res.status}: ${err.slice(0,200)}`);
@@ -798,6 +805,34 @@ const callClaude = async (systemPrompt, userMessage, maxTokens=1000) => {
   if (!text) throw new Error("Gemini returned empty response");
   return text.trim();
 };
+
+// Retry with exponential backoff on 429
+const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => {
+  const isPro = model.includes("2.5-pro");
+  const delays = isPro ? [8000, 20000, 40000] : [3000, 8000, 15000];
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, delays[attempt - 1]));
+      return await _callGeminiRaw(model, systemPrompt, userMessage, maxTokens);
+    } catch(e) {
+      lastErr = e;
+      if (e.status !== 429) throw e; // only retry on rate limit
+    }
+  }
+  throw new Error("AI is busy — please try again in a moment");
+};
+// Pro: deep reasoning — serialized through queue so calls never stack simultaneously
+const callClaude = (systemPrompt, userMessage, maxTokens=1000) => {
+  // Add small gap between pro calls to respect 2 RPM free tier
+  _proQueue = _proQueue
+    .then(() => new Promise(r => setTimeout(r, 500)))
+    .then(() => _callGemini(GEMINI_MODEL_PRO, systemPrompt, userMessage, maxTokens));
+  return _proQueue;
+};
+// Flash: fast mechanical tasks (edge labels, one-liners, pattern detection)
+const callClaudeFlash = async (systemPrompt, userMessage, maxTokens=1000) =>
+  _callGemini(GEMINI_MODEL_FLASH, systemPrompt, userMessage, maxTokens);
 
 const shapeEntry = async (rawText) => {
   if (!rawText || !rawText.trim()) throw new Error("nothing to shape");
@@ -844,7 +879,7 @@ Respond with ONE sentence only — not advice, not reflection, not a question. J
 The sentence should feel like someone who actually heard them — not a therapist, not a coach, just a person.
 Examples of the right register: "That sounds exhausting." / "You've been carrying this alone for a while." / "That's a lot to hold." / "Nobody saw that, and it matters."
 Do not explain. Do not summarize. Do not ask anything. One sentence. That's it.`;
-  return await callClaude(system, rawText.slice(0, 3000), 100);
+  return await callClaudeFlash(system, rawText.slice(0, 3000), 100);
 };
 
 // ─── THREAD ANALYSIS ──────────────────────────────────────────────────────────
@@ -872,25 +907,36 @@ Only return the JSON.`;
 
 // ─── HANDWRITING OCR ──────────────────────────────────────────────────────────
 const ocrHandwriting = async (base64Image, mediaType="image/png") => {
-  const res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${getGeminiKey()}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [
-          { inline_data: { mime_type: mediaType, data: base64Image } },
-          { text: "Transcribe exactly what is handwritten in this image. Return only the transcribed text, nothing else. Preserve line breaks. If nothing is legible, return empty string." }
-        ]}],
-        generationConfig: { maxOutputTokens: 500 },
-      }),
-    }
-  );
-  if (!res.ok) throw new Error(`Gemini OCR error ${res.status}`);
-  const data = await res.json();
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
-  if (!text) throw new Error("empty OCR response");
-  return text.trim();
+  // Vision call — use flash (supports images, lower RPM cost)
+  const apiKey = getGeminiKey();
+  if (!apiKey) throw new Error("no-gemini-key");
+  const delays = [3000, 8000];
+  let lastErr;
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, delays[attempt-1]));
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_FLASH}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [
+              { inline_data: { mime_type: mediaType, data: base64Image } },
+              { text: "Transcribe exactly what is handwritten in this image. Return only the transcribed text, nothing else. Preserve line breaks. If nothing is legible, return empty string." }
+            ]}],
+            generationConfig: { maxOutputTokens: 500 },
+          }),
+        }
+      );
+      if (res.status === 429) { lastErr = new Error("rate-limited"); continue; }
+      if (!res.ok) throw new Error(`Gemini OCR error ${res.status}`);
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      return text.trim();
+    } catch(e) { lastErr = e; if (!e.message.includes("rate-limited")) throw e; }
+  }
+  throw lastErr || new Error("OCR failed");
 };
 
 // ─── SPEECH RECOGNITION ───────────────────────────────────────────────────────
@@ -4985,7 +5031,7 @@ No other text.`;
 
   const prompt = `Top themes: ${topThemes}\nTop archetypes: ${topArcs}\nSoul profile register: ${soulProfile.emotionalRegister||""}\nNode count: ${nodes.length}`;
   try {
-    const raw = await callClaude(system, prompt, 150);
+    const raw = await callClaudeFlash(system, prompt, 150);
     const clean = raw.replace(/```json|```/g,"").trim();
     return JSON.parse(clean);
   } catch { return null; }
@@ -5137,7 +5183,7 @@ const aiEdgeLabel = async (nodeA, nodeB) => {
   const aCtx = `${nodeA.name} [emotional: ${(nodeA.fingerprint?.emotional||nodeA.tags||[]).join(", ")}, archetype: ${nodeA.fingerprint?.archetype||""}]`;
   const bCtx = `${nodeB.name} [emotional: ${(nodeB.fingerprint?.emotional||nodeB.tags||[]).join(", ")}, archetype: ${nodeB.fingerprint?.archetype||""}]`;
   const system = `In 3-5 words, name the invisible thread between these two things in someone's inner world. No punctuation. Lowercase. Be precise to THESE specific nodes — their emotional register and themes. Examples: "hunger for escape", "tenderness at distance", "the wound that teaches", "both forms of becoming".`;
-  const raw = await callClaude(system, `${aCtx}\n${bCtx}`, 40);
+  const raw = await callClaudeFlash(system, `${aCtx}\n${bCtx}`, 40);
   return raw.trim().replace(/^"|"$/g,"").toLowerCase();
 };
 
@@ -5207,26 +5253,38 @@ Return ONLY valid JSON:
   "reflection": "One sentence about what this image holds."
 }`;
   const userMsg = note ? `Personal note: "${note}"` : "No note provided.";
-  // Gemini vision call with base64 image
+  // Vision call with base64 image — use pro for emotional depth, with retry
+  const apiKey = getGeminiKey();
+  if (!apiKey) throw new Error("no-gemini-key");
   const [_meta, _b64] = dataUrl.split(",");
   const _mimeMatch = _meta.match(/data:([^;]+)/);
   const _mime = _mimeMatch ? _mimeMatch[1] : "image/jpeg";
-  const _res = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent?key=${getGeminiKey()}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{ role: "user", parts: [
-          { inline_data: { mime_type: _mime, data: _b64 } },
-          { text: `${system}\n\n${userMsg}` }
-        ]}],
-        generationConfig: { maxOutputTokens: 300 },
-      }),
-    }
-  );
-  const _data = await _res.json();
-  const text = _data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const delays = [8000, 20000];
+  let text = "";
+  for (let attempt = 0; attempt <= delays.length; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, delays[attempt-1]));
+      const _res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL_PRO}:generateContent?key=${apiKey}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            contents: [{ role: "user", parts: [
+              { inline_data: { mime_type: _mime, data: _b64 } },
+              { text: `${system}\n\n${userMsg}` }
+            ]}],
+            generationConfig: { maxOutputTokens: 300 },
+          }),
+        }
+      );
+      if (_res.status === 429) { if (attempt < delays.length) continue; break; }
+      if (!_res.ok) break;
+      const _data = await _res.json();
+      text = _data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+      break;
+    } catch { break; }
+  }
   const clean = text.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
   try { return JSON.parse(clean); }
   catch { return { name:"untitled image", emotional:["quiet"], themes:["presence"], archetype:"mirror", reflection:"An image worth keeping." }; }
@@ -5372,19 +5430,26 @@ function TheSelfView({ entries, onBack }) {
   }, [data.nodes.length]);
 
   // Generate soul question after adding nodes (when we have 5+ and soul enabled)
+  // Only depends on node count — NOT soulProfile, to avoid re-firing after every soul update
+  const soulQuestionFiredRef = React.useRef(false);
   React.useEffect(() => {
     if (!soulEnabled || !soulProfile || data.nodes.length < 5) return;
     const existing = loadSoulQuestion();
     const dayAgo = Date.now() - 86400000;
     if (existing && existing.generatedAt > dayAgo) return; // max once/day
-    aiSoulQuestion(soulProfile, data.nodes).then(q => {
-      if (!q) return;
-      const withTs = { ...q, generatedAt: Date.now(), answered: false };
-      setSoulQuestion(withTs);
-      saveSoulQuestion(withTs);
-      setTimeout(() => setShowSoulQuestion(true), 2000); // surface after 2s
-    }).catch(()=>{});
-  }, [data.nodes.length, soulProfile]);
+    if (soulQuestionFiredRef.current) return; // already fired this session
+    soulQuestionFiredRef.current = true;
+    // Delay to avoid stacking on top of other AI calls from node add
+    setTimeout(() => {
+      aiSoulQuestion(soulProfile, data.nodes).then(q => {
+        if (!q) return;
+        const withTs = { ...q, generatedAt: Date.now(), answered: false };
+        setSoulQuestion(withTs);
+        saveSoulQuestion(withTs);
+        setTimeout(() => setShowSoulQuestion(true), 2000);
+      }).catch(()=>{ soulQuestionFiredRef.current = false; }); // allow retry on error
+    }, 3000);
+  }, [data.nodes.length]);
 
   // Live rescore — periodically find new resonances (once per session, after 5+ nodes, 10min idle)
   React.useEffect(() => {
@@ -5599,17 +5664,19 @@ function TheSelfView({ entries, onBack }) {
         .then(updated => {
           setSoulProfile(updated);
           saveSoulProfile(updated);
-          // Step 6: Constellation detection after soul profile update
-          setData(current => {
-            aiDetectConstellations(current.nodes, current.edges, constellations).then(newCs => {
-              if (newCs.length > 0) {
-                const merged = [...constellations, ...newCs].slice(-10);
-                setConstellations(merged);
-                saveConstellations(merged);
-              }
-            }).catch(()=>{});
-            return current;
-          });
+          // Step 6: Constellation detection — only when node count is a multiple of 5
+          if (data.nodes.length > 0 && data.nodes.length % 5 === 0) {
+            setData(current => {
+              aiDetectConstellations(current.nodes, current.edges, constellations).then(newCs => {
+                if (newCs.length > 0) {
+                  const merged = [...constellations, ...newCs].slice(-10);
+                  setConstellations(merged);
+                  saveConstellations(merged);
+                }
+              }).catch(()=>{});
+              return current;
+            });
+          }
         })
         .catch(()=>{});
     }
