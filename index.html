@@ -1604,10 +1604,10 @@ function CoverPage({ cover, onOpen }) {
       <div style={{ position:"absolute", inset:0, background: cover.imageData ? "rgba(0,0,0,0.35)" : "transparent" }}/>
       <div style={{ position:"relative", textAlign:"center", padding:"40px 48px", maxWidth:480 }}>
         {cover.title && (
-          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:42, fontWeight:300, fontStyle:"italic", color: cover.imageData ? "#fff" : textColor, letterSpacing:"0.06em", lineHeight:1.2, marginBottom:20 }}>{cover.title}</div>
+          <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:42, fontWeight:300, fontStyle:"italic", color: textColor, letterSpacing:"0.06em", lineHeight:1.2, marginBottom:20 }}>{cover.title}</div>
         )}
         {cover.subtitle && (
-          <div style={{ fontFamily:"'Lora',Georgia,serif", fontSize:16, color: cover.imageData ? "rgba(255,255,255,0.8)" : textColor, fontStyle:"italic", lineHeight:1.7, marginBottom:32 }}>{cover.subtitle}</div>
+          <div style={{ fontFamily:"'Lora',Georgia,serif", fontSize:16, color: textColor, fontStyle:"italic", lineHeight:1.7, marginBottom:32 }}>{cover.subtitle}</div>
         )}
         <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:11, letterSpacing:"0.25em", color: cover.imageData ? "rgba(255,255,255,0.5)" : "var(--ink-faint)", textTransform:"uppercase", marginTop:40 }}>tap to enter</div>
       </div>
@@ -1978,8 +1978,8 @@ function CoverEditor({ cover, onSave, onClose }) {
         <div style={{ borderRadius:10, marginBottom:18, height:160, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", position:"relative", overflow:"hidden", ...bg }}>
           <div style={{ position:"absolute", inset:0, background: imageData ? "rgba(0,0,0,0.3)" : "transparent" }}/>
           <div style={{ position:"relative", textAlign:"center", padding:"0 20px" }}>
-            {title && <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, fontWeight:300, fontStyle:"italic", color: imageData ? "#fff" : textColor, lineHeight:1.2 }}>{title}</div>}
-            {subtitle && <div style={{ fontFamily:"'Lora',serif", fontSize:13, color: imageData ? "rgba(255,255,255,0.8)" : textColor, fontStyle:"italic", marginTop:6 }}>{subtitle}</div>}
+            {title && <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:24, fontWeight:300, fontStyle:"italic", color: textColor, lineHeight:1.2 }}>{title}</div>}
+            {subtitle && <div style={{ fontFamily:"'Lora',serif", fontSize:13, color: textColor, fontStyle:"italic", marginTop:6 }}>{subtitle}</div>}
             {!title && !subtitle && <div style={{ color: imageData ? "rgba(255,255,255,0.4)" : "rgba(0,0,0,0.2)", fontFamily:"'Cormorant Garamond',serif", fontSize:14, fontStyle:"italic" }}>preview</div>}
           </div>
         </div>
