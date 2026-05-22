@@ -823,22 +823,26 @@ const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => 
   throw new Error("AI is busy — please try again in a moment");
 };
 // Pro: deep reasoning — serialized so calls never fire simultaneously
-// Single serialized caller — every AI call goes through this queue, one at a time
-// with a 4 second gap between calls to stay well within 15 RPM free tier
-const _aiQueue = { p: Promise.resolve(), lastCall: 0 };
+// Serialized AI call queue — enforces minimum 4s between calls (stays under 15 RPM)
+// Each caller gets its OWN promise so results don't cross-contaminate
+let _aiQueueTail = Promise.resolve();
+let _aiLastCall = 0;
 const callClaude = (systemPrompt, userMessage, maxTokens=1000) => {
-  _aiQueue.p = _aiQueue.p
-    .catch(() => {})
+  // Chain off current tail, but capture THIS call's promise separately
+  const myCall = _aiQueueTail
+    .catch(() => {}) // don't let previous errors block the queue
     .then(() => {
-      const now = Date.now();
-      const gap = Math.max(0, 4000 - (now - _aiQueue.lastCall));
-      return new Promise(r => setTimeout(r, gap));
+      const wait = Math.max(0, 4000 - (Date.now() - _aiLastCall));
+      return new Promise(r => setTimeout(r, wait));
     })
     .then(() => {
-      _aiQueue.lastCall = Date.now();
+      _aiLastCall = Date.now();
       return _callGemini(GEMINI_MODEL_PRO, systemPrompt, userMessage, maxTokens);
     });
-  return _aiQueue.p;
+  // Advance the tail (swallow error so queue keeps moving)
+  _aiQueueTail = myCall.catch(() => {});
+  // Return THIS call's promise so the caller gets the right result
+  return myCall;
 };
 const callClaudeFlash = callClaude; // same queue, same model, same rate limit
 
