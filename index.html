@@ -126,8 +126,6 @@ const SIGNATURE_KEY  = "myjournal_signature_v1";
 const SPEECH_LANG_KEY= "myjournal_speech_lang_v1";
 const GEMINI_MODEL   = "gemini-2.5-pro";
 const GEMINI_KEY_STORAGE = "myjournal_gemini_key_v1";
-// Paste your key here — this survives site-data clears since it lives in the file
-const GEMINI_KEY_EMBEDDED = "PASTE_YOUR_KEY_HERE";
 
 const isValidGeminiKey = (k) => {
   if (!k || typeof k !== "string") return false;
@@ -135,20 +133,12 @@ const isValidGeminiKey = (k) => {
   return t.length > 10 && t.length < 200 && !t.includes("<") && !t.includes(">") && !t.includes(" ") && /^[A-Za-z0-9_\-]+$/.test(t);
 };
 const getGeminiKey = () => {
-  try {
-    const stored = (localStorage.getItem(GEMINI_KEY_STORAGE) || "").trim();
-    if (isValidGeminiKey(stored)) return stored;
-    if (isValidGeminiKey(GEMINI_KEY_EMBEDDED)) return GEMINI_KEY_EMBEDDED.trim();
-    return "";
-  } catch {
-    return isValidGeminiKey(GEMINI_KEY_EMBEDDED) ? GEMINI_KEY_EMBEDDED.trim() : "";
-  }
+  try { return (localStorage.getItem(GEMINI_KEY_STORAGE) || "").trim(); } catch { return ""; }
 };
 const saveGeminiKey = (k) => {
   try {
     const clean = (k || "").trim();
     if (!clean) { localStorage.removeItem(GEMINI_KEY_STORAGE); return; }
-    if (!isValidGeminiKey(clean)) throw new Error("invalid key format");
     localStorage.setItem(GEMINI_KEY_STORAGE, clean);
   } catch {}
 };
@@ -687,6 +677,7 @@ const collectMeta = (refs) => {
     notes:         refs.notes         || [],
     customTags:    refs.customTags    || [],
     mapSnapshots:  refs.mapSnapshots  || [],
+    geminiKey:     refs.geminiKey     || "",
   };
 };
 const formatDate = (ts) => {
@@ -1071,6 +1062,9 @@ function App() {
         if (typeof remoteMeta.signature === "string" && remoteMeta.signature) {
           setSignature(remoteMeta.signature); saveSignature(remoteMeta.signature);
         }
+        if (typeof remoteMeta.geminiKey === "string" && isValidGeminiKey(remoteMeta.geminiKey) && !getGeminiKey()) {
+          saveGeminiKey(remoteMeta.geminiKey);
+        }
         if (typeof remoteMeta.speechLang === "string" && remoteMeta.speechLang) {
           setSpeechLang(remoteMeta.speechLang); saveSpeechLang(remoteMeta.speechLang);
         }
@@ -1219,6 +1213,7 @@ function App() {
         draft:          (() => { try { const r=localStorage.getItem(DRAFT_KEY); return r?JSON.parse(r):null; } catch{return null;} })(),
         customTags:     (() => { try { return JSON.parse(localStorage.getItem("myjournal_custom_tags_v1")||"[]"); } catch{return [];} })(),
         mapSnapshots:   (() => { try { return JSON.parse(localStorage.getItem("myjournal_map_snapshots_v1")||"[]"); } catch{return [];} })(),
+        geminiKey:      getGeminiKey(),
       });
       if (!navigator.onLine) {
         enqueueOfflineOp("meta", meta);
@@ -4174,27 +4169,16 @@ function SettingsView({ syncConfig, lockConfig, signature, speechLang, activeThe
             ✗ {geminiKeyError}
           </div>
         )}
-        {!geminiKeyError && (() => {
-          const stored = (typeof localStorage !== "undefined" && localStorage.getItem(GEMINI_KEY_STORAGE) || "").trim();
-          const hasStored = isValidGeminiKey(stored);
-          const hasEmbedded = isValidGeminiKey(GEMINI_KEY_EMBEDDED);
-          if (hasStored) return (
-            <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--ink-faint)", display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ color:"var(--mood-clear)" }}>✓ key saved in app</span>
-              <button onClick={() => { saveGeminiKey(""); setGeminiKey(hasEmbedded ? GEMINI_KEY_EMBEDDED : ""); setGeminiKeyError(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
-            </div>
-          );
-          if (hasEmbedded) return (
-            <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--mood-clear)", fontStyle:"italic" }}>
-              ✓ using embedded key — AI is ready, no re-entry needed
-            </div>
-          );
-          return (
-            <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"#b85030", fontStyle:"italic" }}>
-              no key set — AI features won't work
-            </div>
-          );
-        })()}
+        {!geminiKeyError && (getGeminiKey() ? (
+          <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--ink-faint)", display:"flex", alignItems:"center", gap:8 }}>
+            <span style={{ color:"var(--mood-clear)" }}>✓ key saved</span>
+            <button onClick={() => { saveGeminiKey(""); setGeminiKey(""); setGeminiKeyError(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
+          </div>
+        ) : (
+          <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"#b85030", fontStyle:"italic" }}>
+            no key set — AI features won't work
+          </div>
+        ))}
       </Section>
 
       {/* Supabase sync */}
