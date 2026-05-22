@@ -126,8 +126,30 @@ const SIGNATURE_KEY  = "myjournal_signature_v1";
 const SPEECH_LANG_KEY= "myjournal_speech_lang_v1";
 const GEMINI_MODEL   = "gemini-2.5-pro";
 const GEMINI_KEY_STORAGE = "myjournal_gemini_key_v1";
-const getGeminiKey = () => { try { return localStorage.getItem(GEMINI_KEY_STORAGE) || ""; } catch { return ""; } };
-const saveGeminiKey = (k) => { try { if(k) localStorage.setItem(GEMINI_KEY_STORAGE, k); else localStorage.removeItem(GEMINI_KEY_STORAGE); } catch {} };
+const isValidGeminiKey = (k) => {
+  if (!k || typeof k !== "string") return false;
+  const t = k.trim();
+  // Gemini keys are ~39 chars starting with "AIza", no whitespace, no HTML tags
+  return t.length > 10 && t.length < 200 && !t.includes("<") && !t.includes(">") && !t.includes(" ") && /^[A-Za-z0-9_\-]+$/.test(t);
+};
+const getGeminiKey = () => {
+  try {
+    const raw = localStorage.getItem(GEMINI_KEY_STORAGE) || "";
+    if (!isValidGeminiKey(raw)) {
+      // Corrupted key in storage — silently clear it
+      if (raw) { try { localStorage.removeItem(GEMINI_KEY_STORAGE); } catch {} }
+      return "";
+    }
+    return raw.trim();
+  } catch { return ""; }
+};
+const saveGeminiKey = (k) => {
+  try {
+    const clean = (k || "").trim();
+    if (!clean) { localStorage.removeItem(GEMINI_KEY_STORAGE); return; }
+    if (!isValidGeminiKey(clean)) throw new Error("invalid key format");
+    localStorage.setItem(GEMINI_KEY_STORAGE, clean);
+  } catch {} };
 
 const MOOD_COLORS = {
   reflective:"#7a8b9a", raw:"#c45880", angry:"#b85030",
@@ -4017,6 +4039,7 @@ function SettingsView({ syncConfig, lockConfig, signature, speechLang, activeThe
   const [showSetup, setShowSetup]   = useState(false);
   const [geminiKey, setGeminiKey]   = useState(getGeminiKey);
   const [geminiKeySaved, setGeminiKeySaved] = useState(false);
+  const [geminiKeyError, setGeminiKeyError] = useState("");
 
   const testConnection = async () => {
     const u = url.trim(), k = key.trim(), id = userId.trim();
@@ -4087,21 +4110,35 @@ function SettingsView({ syncConfig, lockConfig, signature, speechLang, activeThe
             placeholder="AIza..."
             style={{ flex:1, padding:"9px 12px", borderRadius:8, border:"1px solid var(--rule)", background:"var(--page-warm)", color:"var(--ink)", fontFamily:"'Cormorant Garamond',serif", fontSize:14, outline:"none" }}
           />
-          <button onClick={() => { saveGeminiKey(geminiKey.trim()); setGeminiKeySaved(true); setTimeout(()=>setGeminiKeySaved(false), 2000); }}
+          <button onClick={() => {
+              const clean = geminiKey.trim();
+              if (!clean) { saveGeminiKey(""); setGeminiKeySaved(true); setGeminiKeyError(""); setTimeout(()=>setGeminiKeySaved(false), 2000); return; }
+              if (!isValidGeminiKey(clean)) { setGeminiKeyError("that doesn't look like a valid Gemini key — should start with AIza and contain only letters, numbers, _ or -"); return; }
+              setGeminiKeyError("");
+              saveGeminiKey(clean);
+              setGeminiKey(clean);
+              setGeminiKeySaved(true);
+              setTimeout(()=>setGeminiKeySaved(false), 2000);
+            }}
             style={{ padding:"9px 18px", borderRadius:8, border:"none", background:"var(--ink)", color:"var(--page)", fontFamily:"'Cormorant Garamond',serif", fontSize:13, cursor:"pointer", letterSpacing:"0.06em", flexShrink:0 }}>
             {geminiKeySaved ? "saved ✓" : "save"}
           </button>
         </div>
-        {getGeminiKey() ? (
+        {geminiKeyError && (
+          <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"#b85030", fontStyle:"italic" }}>
+            ✗ {geminiKeyError}
+          </div>
+        )}
+        {!geminiKeyError && getGeminiKey() ? (
           <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--ink-faint)", display:"flex", alignItems:"center", gap:8 }}>
             <span style={{ color:"var(--mood-clear)" }}>✓ key saved</span>
-            <button onClick={() => { saveGeminiKey(""); setGeminiKey(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
+            <button onClick={() => { saveGeminiKey(""); setGeminiKey(""); setGeminiKeyError(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
           </div>
-        ) : (
+        ) : !geminiKeyError ? (
           <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"#b85030", fontStyle:"italic" }}>
             no key set — AI features (shaping, the self, monthly summary) won't work
           </div>
-        )}
+        ) : null}
       </Section>
 
       {/* Supabase sync */}
