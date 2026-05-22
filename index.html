@@ -535,8 +535,8 @@ const ensureStorageBucket = async (cfg) => {
       headers: { "apikey": anonKey, "Authorization": `Bearer ${anonKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ id: STORAGE_BUCKET, name: STORAGE_BUCKET, public: true }),
     });
-    // 200 = created, 409 = already exists — both are fine
-    if (res.status !== 200 && res.status !== 409) {
+    // 200 = created, 409 = already exists, 400/403 = bucket already exists (RLS blocks re-create) — all fine
+    if (res.status !== 200 && res.status !== 409 && res.status !== 400 && res.status !== 403) {
       const t = await res.text();
       console.warn("bucket create:", res.status, t);
       return `image storage unavailable (${res.status}) — images may not sync across devices`;
