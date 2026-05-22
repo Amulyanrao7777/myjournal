@@ -1093,20 +1093,9 @@ function App() {
           setActiveTheme(remoteMeta.activeTheme); saveThemePref(remoteMeta.activeTheme); applyTheme(remoteMeta.activeTheme);
         }
         if (remoteMeta.cover) {
-          // If there's a cloud image URL but no local base64, fetch and restore it
           const remoteCover = remoteMeta.cover;
-          if (remoteCover.coverImageUrl && !remoteCover.imageData) {
-            fetch(remoteCover.coverImageUrl)
-              .then(r => r.blob())
-              .then(blob => new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(blob); }))
-              .then(dataUrl => {
-                const restored = { ...remoteCover, imageData: dataUrl };
-                setCover(restored); saveCover(restored);
-              })
-              .catch(() => { setCover(remoteCover); saveCover(remoteCover); });
-          } else {
-            setCover(remoteCover); saveCover(remoteCover);
-          }
+          // Set cover immediately using coverImageUrl — CoverPage now supports it directly
+          setCover(remoteCover); saveCover(remoteCover);
         }
         // New fields — restore if present in cloud and not already set locally
         if (remoteMeta.draft && !localStorage.getItem(DRAFT_KEY)) {
@@ -1588,8 +1577,9 @@ function CoverPage({ cover, onOpen }) {
     return () => window.removeEventListener("keydown", handler);
   }, [enter]);
   if (!visible || !cover) return null;
-  const bg = cover.imageData
-    ? { backgroundImage:"url(" + cover.imageData + ")", backgroundSize:"cover", backgroundPosition:"center" }
+  const coverImg = cover.imageData || cover.coverImageUrl || null;
+  const bg = coverImg
+    ? { backgroundImage:"url(" + coverImg + ")", backgroundSize:"cover", backgroundPosition:"center" }
     : { background: cover.bgColor || "var(--page-deep)" };
   const textColor = cover.textColor || "var(--ink)";
   return (
@@ -1601,7 +1591,7 @@ function CoverPage({ cover, onOpen }) {
       onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); enter(); } }}
       style={{ position:"fixed", inset:0, zIndex:99999, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", cursor:"pointer", animation:"fadeIn 0.8s ease both", outline:"none", ...bg }}
     >
-      <div style={{ position:"absolute", inset:0, background: cover.imageData ? "rgba(0,0,0,0.35)" : "transparent" }}/>
+      <div style={{ position:"absolute", inset:0, background: coverImg ? "rgba(0,0,0,0.35)" : "transparent" }}/>
       <div style={{ position:"relative", textAlign:"center", padding:"40px 48px", maxWidth:480 }}>
         {cover.title && (
           <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:42, fontWeight:300, fontStyle:"italic", color: textColor, letterSpacing:"0.06em", lineHeight:1.2, marginBottom:20 }}>{cover.title}</div>
@@ -1609,7 +1599,7 @@ function CoverPage({ cover, onOpen }) {
         {cover.subtitle && (
           <div style={{ fontFamily:"'Lora',Georgia,serif", fontSize:16, color: textColor, fontStyle:"italic", lineHeight:1.7, marginBottom:32 }}>{cover.subtitle}</div>
         )}
-        <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:11, letterSpacing:"0.25em", color: cover.imageData ? "rgba(255,255,255,0.5)" : "var(--ink-faint)", textTransform:"uppercase", marginTop:40 }}>tap to enter</div>
+        <div style={{ fontFamily:"'Cormorant Garamond',serif", fontSize:11, letterSpacing:"0.25em", color: coverImg ? "rgba(255,255,255,0.5)" : "var(--ink-faint)", textTransform:"uppercase", marginTop:40 }}>tap to enter</div>
       </div>
     </div>
   );
