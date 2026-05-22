@@ -4918,7 +4918,10 @@ Return ONLY valid JSON:
     const p = JSON.parse(clean);
     if (!NODE_CATEGORIES[p.category]) p.category = "other";
     return p;
-  } catch { return { category:"other", emotional:[], themes:[], archetype:"other", reflection:"Something worth keeping." }; }
+  } catch(e) {
+    console.error("aiFingerprint parse failed. raw response:", raw?.slice(0,300), "error:", e.message);
+    return { category:"other", emotional:[], themes:[], archetype:"other", reflection:"Something worth keeping." };
+  }
 };
 
 // Journal search — find entries resonant with a node name for the journal toggle
@@ -5617,7 +5620,7 @@ function TheSelfView({ entries, onBack }) {
     const personalTestimony = [nodeTranscript.trim(), addNote.trim()].filter(Boolean).join(" — ");
     const journalCtx = useJournal ? findJournalContext(name, entries) : "";
     const fingerprint = await aiFingerprint(name, personalTestimony, soulEnabled ? soulProfile : null, journalCtx)
-      .catch(()=>({ category:"other", emotional:[], themes:[], archetype:"other", reflection:"Something worth keeping." }));
+      .catch((e)=>{ console.error("aiFingerprint FAILED:", e.message); return { category:"other", emotional:[], themes:[], archetype:"other", reflection:"Something worth keeping." }; });
 
     const id = `node_${Date.now()}_${Math.random().toString(36).slice(2,5)}`;
     const combinedNote = [nodeTranscript.trim(), addNote.trim()].filter(Boolean).join(" — ") || undefined;
