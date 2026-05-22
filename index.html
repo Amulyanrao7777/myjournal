@@ -520,13 +520,18 @@ const uploadImageToSupabase = async (cfg, dataUrl, fileName) => {
 const ensureStorageBucket = async (cfg) => {
   const { url, anonKey } = cfg;
   try {
+    // Check if bucket exists first (GET) — avoids noisy 400 from trying to re-create it
+    const check = await fetch(`${url}/storage/v1/bucket/${STORAGE_BUCKET}`, {
+      headers: { "apikey": anonKey, "Authorization": `Bearer ${anonKey}` },
+    });
+    if (check.ok) return null; // already exists, nothing to do
+    // Doesn't exist yet — try to create it
     const res = await fetch(`${url}/storage/v1/bucket`, {
       method: "POST",
       headers: { "apikey": anonKey, "Authorization": `Bearer ${anonKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({ id: STORAGE_BUCKET, name: STORAGE_BUCKET, public: true }),
     });
-    // 200 = created, 409 = already exists, 400/403 = bucket already exists (RLS blocks re-create) — all fine
-    if (res.status !== 200 && res.status !== 409 && res.status !== 400 && res.status !== 403) {
+    if (res.status !== 200 && res.status !== 409) {
       const t = await res.text();
       console.warn("bucket create:", res.status, t);
       return `image storage unavailable (${res.status}) — images may not sync across devices`;
