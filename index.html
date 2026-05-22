@@ -1035,7 +1035,7 @@ function App() {
     showBanner("checking for updates…");
 
     // Ensure storage bucket exists (no-op if already present)
-    ensureStorageBucket(syncConfig).then(bucketErr => {
+    Promise.resolve(null).then(bucketErr => {
       if (bucketErr) showBannerGlobal("⚠ " + bucketErr, 6000);
     }).catch(() => {});
 
@@ -1537,17 +1537,18 @@ function App() {
       {view === "open"     && active && <ErrorBoundary key={`open-${active.id}`}><EntryView entry={active} allEntries={entries} lockConfig={lockConfig} signature={signature} syncConfig={syncConfig} onSave={saveEntry} onBack={()=>go("index")} onDelete={()=>deleteEntry(active.id)} onExport={()=>exportEntryHTML(active)} onEdit={()=>go("write_edit", active.id)} onThread={()=>go("thread", active.id)} onPin={()=>pinEntry(active.id)} onToggleLock={()=>toggleEntryLock(active.id)} onSaveWitness={(e)=>{ saveEntry(e); }} speechLang={speechLang}/></ErrorBoundary>}
       {view === "write_edit" && active && <ErrorBoundary key={`edit-${active.id}`}><WriteView allEntries={entries} editEntry={active} onSave={(e)=>{ saveEntry(e); go("open", e.id); }} onCancel={()=>go("open", active.id)} showBanner={showBanner} speechLang={speechLang}/></ErrorBoundary>}
       {view === "settings" && <ErrorBoundary key="settings"><SettingsView syncConfig={syncConfig} lockConfig={lockConfig} signature={signature} speechLang={speechLang} activeTheme={activeTheme} cover={cover} onSave={(cfg)=>{ setSyncConfig(cfg); saveSyncConfig(cfg); go("index"); }} onSaveLock={(cfg)=>{ setLockConfig(cfg); saveLockConfig(cfg); }} onSaveSignature={(sig)=>setSignature(sig)} onSaveSpeechLang={(l)=>setSpeechLang(l)} onSaveTheme={(t)=>setActiveTheme(t)} onSaveCover={async (c)=>{
+              // Always save locally with imageData so it shows immediately
+              setCover(c); saveCover(c);
+              // Then upload image to Supabase Storage in background so other devices get it via URL
               if (c && c.imageData && c.imageData.startsWith("data:") && syncConfig) {
                 try {
                   const ext = c.imageData.startsWith("data:image/png") ? "png" : "jpg";
                   const fileName = "cover_" + Date.now() + "." + ext;
                   const url = await uploadImageToSupabase(syncConfig, c.imageData, fileName);
-                  setCover({ ...c, coverImageUrl: url });
-                  saveCover({ ...c, coverImageUrl: url });
-                  return;
+                  const withUrl = { ...c, coverImageUrl: url };
+                  setCover(withUrl); saveCover(withUrl);
                 } catch(e) { console.warn("cover image upload failed:", e.message); }
               }
-              setCover(c); saveCover(c);
             }} onBack={()=>go("index")} exportJSON={exportJSON} exportMarkdown={exportMarkdown} importJSON={importJSON} showBanner={showBanner} showConfirm={showConfirm}/></ErrorBoundary>}
       {view === "burn"     && <ErrorBoundary key="burn"><BurnView onBack={()=>go("index")} onSave={(e)=>{ saveEntry(e); go("index"); }} showBanner={showBanner} speechLang={speechLang}/></ErrorBoundary>}
       {view === "calendar" && <ErrorBoundary key="calendar"><CalendarView entries={entries} onOpen={id=>go("open",id)} onBack={()=>go("index")}/></ErrorBoundary>}
