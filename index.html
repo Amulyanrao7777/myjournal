@@ -1546,6 +1546,12 @@ function App() {
 // ─── COVER PAGE ───────────────────────────────────────────────────────────────
 function CoverPage({ cover, onOpen }) {
   const [visible, setVisible] = React.useState(true);
+  const enter = React.useCallback(() => { setVisible(false); onOpen(); }, [onOpen]);
+  React.useEffect(() => {
+    const handler = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); enter(); } };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [enter]);
   if (!visible || !cover) return null;
   const bg = cover.imageData
     ? { backgroundImage:"url(" + cover.imageData + ")", backgroundSize:"cover", backgroundPosition:"center" }
@@ -1553,8 +1559,12 @@ function CoverPage({ cover, onOpen }) {
   const textColor = cover.textColor || "var(--ink)";
   return (
     <div
-      onClick={() => { setVisible(false); onOpen(); }}
-      style={{ position:"fixed", inset:0, zIndex:99999, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", cursor:"pointer", animation:"fadeIn 0.8s ease both", ...bg }}
+      onClick={enter}
+      tabIndex={0}
+      role="button"
+      aria-label="Enter journal"
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); enter(); } }}
+      style={{ position:"fixed", inset:0, zIndex:99999, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", cursor:"pointer", animation:"fadeIn 0.8s ease both", outline:"none", ...bg }}
     >
       <div style={{ position:"absolute", inset:0, background: cover.imageData ? "rgba(0,0,0,0.35)" : "transparent" }}/>
       <div style={{ position:"relative", textAlign:"center", padding:"40px 48px", maxWidth:480 }}>
