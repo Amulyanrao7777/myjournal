@@ -1279,6 +1279,8 @@ function App() {
   }, [bootPullDone]);
 
   useEffect(() => { pushMeta(); }, [stickyNotes, signature, speechLang, activeTheme, cover, pushMeta]);
+  // Expose pushMeta globally so import handler in TheSelfView can trigger a sync
+  useEffect(() => { window.__pushMeta = pushMeta; }, [pushMeta]);
 
   // ── RECONNECT AUTO-PUSH ──
   useEffect(() => {
@@ -5748,9 +5750,15 @@ function TheSelfView({ entries, onBack }) {
   // Load insight for selected node
   React.useEffect(() => {
     if (!selectedId) { setInsight(null); return; }
-    setInsightLoading(true);
     const node = data.nodes.find(n=>n.id===selectedId);
     if (!node) return;
+    // If node already has a rich reflection, use it — no AI call needed
+    if (node.reflection && node.reflection.length > 40) {
+      setInsight(node.reflection);
+      setInsightLoading(false);
+      return;
+    }
+    setInsightLoading(true);
     const connected = connectedTo(selectedId);
     aiNodeInsight(node, connected, entries, soulEnabled ? soulProfile : null)
       .then(txt => setInsight(txt))
@@ -5942,6 +5950,10 @@ function TheSelfView({ entries, onBack }) {
                   if (!imported.nodes || !imported.edges) throw new Error("invalid format");
                   setData(imported);
                   saveSelf(imported);
+                  // Trigger Supabase sync immediately after import
+                  setTimeout(() => {
+                    try { window.__pushMeta && window.__pushMeta(); } catch {}
+                  }, 500);
                   showBannerGlobal("soul map imported — " + imported.nodes.length + " nodes", 3000);
                 } catch(err) {
                   showBannerGlobal("import failed — " + err.message, 3000);
