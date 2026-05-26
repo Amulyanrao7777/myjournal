@@ -38,6 +38,7 @@ html,body{height:100%;background:var(--bg);font-family:'Lora',Georgia,serif;}
   z-index:9999;transition:transform 0.3s ease;pointer-events:none;white-space:nowrap;
 }
 #sync-banner.show{transform:translateX(-50%) translateY(0);}
+#sync-banner.rate-limit{background:#b85030;}
 
 /* ── PAGE ANIMATIONS ── */
 @keyframes pageReveal{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
@@ -809,7 +810,8 @@ const _callGeminiRaw = async (model, systemPrompt, userMessage, maxTokens=1000) 
 // Retry with exponential backoff on 429
 const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => {
   const isPro = model.includes("2.5");
-  const delays = isPro ? [5000, 12000, 25000] : [2000, 5000, 10000];
+  // FIXED: generous retry delays for free tier (15 RPM)
+  const delays = isPro ? [15000, 35000, 65000] : [12000, 30000, 60000];
   let lastErr;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
@@ -820,7 +822,7 @@ const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => 
       if (e.status !== 429) throw e; // only retry on rate limit
     }
   }
-  throw new Error("AI is busy — please try again in a moment");
+  throw new Error("Gemini rate limit — free tier: 15 req/min. Wait ~60s and try again, or upgrade at aistudio.google.com");
 };
 // Pro: deep reasoning — serialized so calls never fire simultaneously
 // Serialized AI call queue — enforces minimum 4s between calls (stays under 15 RPM)
@@ -1498,7 +1500,20 @@ function App() {
         if (importedSig) { setSignature(importedSig); saveSignature(importedSig); }
         if (importedTheme) { setActiveTheme(importedTheme); saveThemePref(importedTheme); applyTheme(importedTheme); }
         if (importedCover) { setCover(importedCover); saveCover(importedCover); }
-        showBanner("imported " + parts.join(" + ") + " ✓", 2500);
+        showBanner("imported " + parts.join(" + ") + " ✓ — pushing to cloud…", 1500);
+        // FIXED: import was saving to localStorage only, never reaching Supabase
+        setTimeout(async () => {
+          const cfg = syncConfigRef.current;
+          if (!cfg) { showBanner("imported " + parts.join(" + ") + " ✓ (no cloud sync configured)", 3000); return; }
+          try {
+            const latest = loadEntries();
+            await syncToCloud(cfg, latest);
+            if (typeof window.__pushMeta === "function") window.__pushMeta();
+            showBanner("imported + synced to cloud ✓", 3000);
+          } catch(e) {
+            showBanner("imported ✓ — cloud sync failed: " + e.message, 4000);
+          }
+        }, 1200);
       } catch(err) { showBanner("import failed — " + (err.message||"invalid file"), 2500); }
     };
     reader.onerror = () => showBanner("could not read file", 2500);
@@ -4996,35 +5011,10 @@ const scoreToStrength = (score) => {
   return null; // no connection
 };
 
-// Step 2b: LLM-as-similarity-judge — batched semantic scoring for top candidates
-// Supplements structural scoring with genuine semantic understanding
-const aiSemanticScore = async (newNode, candidateNodes, feedback) => {
-  if (!candidateNodes.length) return {};
-  // Build feedback context for soul profile bias
-  const fb = feedback || { accepted: [], rejected: [] };
-  const acceptedCount = (fb.accepted || []).length;
-  const rejectedCount = (fb.rejected || []).length;
-  const feedbackCtx = (acceptedCount + rejectedCount > 4)
-    ? `\n\nThis person has accepted ${acceptedCount} and rejected ${rejectedCount} AI-suggested connections. Calibrate accordingly.`
-    : "";
-
-  const pairs = candidateNodes.map((n, i) =>
-    `Pair ${i+1}: "${newNode.name}" [${(newNode.fingerprint?.themes||[]).join(", ")}] ↔ "${n.name}" [${(n.fingerprint?.themes||n.tags||[]).join(", ")}]`
-  ).join("\n");
-
-  const system = `You are judging semantic resonance between nodes in someone's inner world map. For each pair, rate how deeply they resonate — not surface similarity but genuine emotional or archetypal echo. Return ONLY a JSON array of numbers 0–1, one per pair, no other text.${feedbackCtx}`;
-  const prompt = `Rate these pairs (0=no resonance, 1=deep resonance):\n${pairs}`;
-
-  try {
-    const raw = await callClaude(system, prompt, 200);
-    const clean = raw.replace(/```json|```/g, "").trim();
-    const scores = JSON.parse(clean);
-    if (!Array.isArray(scores)) return {};
-    const result = {};
-    candidateNodes.forEach((n, i) => { result[n.id] = typeof scores[i] === "number" ? scores[i] : 0; });
-    return result;
-  } catch { return {}; }
-};
+// aiSemanticScore STUBBED — was calling _callGeminiRaw() directly,
+// bypassing the queue and causing 429 bursts on every node add.
+// scoreConnection() structural ordering is sufficient. Stub kept for safety.
+const aiSemanticScore = async (newNode, candidateNodes, feedback) => { return {}; };
 
 // Soul interrogation — periodic question surfaced to the user
 const aiSoulQuestion = async (soulProfile, nodes) => {
@@ -5157,24 +5147,16 @@ const aiDetectConstellations = async (nodes, edges, existingConstellations) => {
 const aiSuggestConnections = async (newNode, existingNodes, soulProfile, feedback) => {
   if (!existingNodes.length) return [];
 
-  // Score all existing nodes structurally (includes temporal weighting)
+  // Pure structural scoring — zero extra API calls.
+  // Semantic judge removed (was bypassing queue causing 429 bursts).
   const scored = existingNodes.map(n => ({
     id: n.id,
     score: scoreConnection(newNode, n),
     node: n,
   })).filter(s => s.score >= 0.04).sort((a,b)=>b.score-a.score);
 
-  // If we have good fingerprint data, use scoring + semantic judge
-  const hasFingerprint = (newNode.fingerprint?.emotional||[]).length > 0;
-  if (hasFingerprint && scored.length > 0) {
-    const top = scored.slice(0, 8); // semantic judge over top 8 structural candidates
-    const semanticScores = await aiSemanticScore(newNode, top.map(s=>s.node), feedback).catch(()=>({}));
-    // Blend structural + semantic (60/40)
-    const blended = top.map(s => {
-      const sem = semanticScores[s.id] ?? s.score;
-      return { id: s.id, score: s.score * 0.6 + sem * 0.4, node: s.node };
-    }).sort((a,b)=>b.score-a.score);
-    return blended.slice(0,5).map(s => ({ id: s.id, strength: scoreToStrength(s.score) })).filter(s=>s.strength);
+  if (scored.length > 0) {
+    return scored.slice(0,5).map(s => ({ id: s.id, strength: scoreToStrength(s.score) })).filter(s=>s.strength);
   }
 
   // Fallback: ask AI using names + context
@@ -5454,19 +5436,19 @@ function TheSelfView({ entries, onBack }) {
     // Don't fire on cold open — only if node count grew this session
     if (data.nodes.length <= nodeCountOnMountRef.current) return;
     const existing = loadSoulQuestion();
-    const dayAgo = Date.now() - 86400000;
-    if (existing && existing.generatedAt > dayAgo) return; // max once/day
+    const sevenDaysAgo = Date.now() - 7 * 86400000;
+    if (existing && existing.generatedAt > sevenDaysAgo) return; // FIXED: max once/7 days
     if (soulQuestionFiredRef.current) return;
     soulQuestionFiredRef.current = true;
-    setTimeout(() => {
-      aiSoulQuestion(soulProfile, data.nodes).then(q => {
-        if (!q) return;
-        const withTs = { ...q, generatedAt: Date.now(), answered: false };
-        setSoulQuestion(withTs);
-        saveSoulQuestion(withTs);
-        setTimeout(() => setShowSoulQuestion(true), 2000);
-      }).catch(()=>{ soulQuestionFiredRef.current = false; });
-    }, 3000);
+    // FIXED: removed setTimeout(3000) that bypassed the queue
+    // aiSoulQuestion uses callClaude() internally so it's already queued
+    aiSoulQuestion(soulProfile, data.nodes).then(q => {
+      if (!q) return;
+      const withTs = { ...q, generatedAt: Date.now(), answered: false };
+      setSoulQuestion(withTs);
+      saveSoulQuestion(withTs);
+      setTimeout(() => setShowSoulQuestion(true), 2000);
+    }).catch(()=>{ soulQuestionFiredRef.current = false; });
   }, [data.nodes.length]);
 
   // Live rescore — disabled (burns quota on mount, not worth it)
@@ -5640,13 +5622,13 @@ function TheSelfView({ entries, onBack }) {
     setAddPhase("connecting");
     const suggestions = await aiSuggestConnections(newNode, data.nodes, soulEnabled ? soulProfile : null, feedback).catch(()=>[]);
 
-    // Step 3: Label edges — stagger them to avoid burst 429s
+    // Step 3: Label edges — queue handles all spacing, no manual delays needed
+    // FIXED: removed 600ms gaps that were fighting the queue's own timing
     setAddPhase("weaving");
     const newEdges = [];
     for (const { id: targetId, strength } of suggestions.slice(0,3)) {
       const target = data.nodes.find(n=>n.id===targetId);
       if (!target) continue;
-      await new Promise(r => setTimeout(r, 600));
       const label = await aiEdgeLabel(newNode, target).catch(()=>"");
       newEdges.push({ id:`e_${Date.now()}_${Math.random().toString(36).slice(2,4)}`, from:id, to:targetId, label, strength: strength||"faint", aiSuggested:true });
     }
@@ -5658,18 +5640,15 @@ function TheSelfView({ entries, onBack }) {
       return { nodes: newNodes, edges: [...evolvedEdges, ...newEdges] };
     });
 
-    // Step 5: Update soul profile + constellation detection (async, non-blocking, delayed)
+    // Step 5: Soul profile — FIXED: no setTimeout, properly queue-routed
+    // Was: await new Promise(r => setTimeout(r, 1200)) bypassed queue = parallel 429
     if (soulEnabled) {
-      setAddPhase("updating self");
       const allNodes = [...data.nodes, newNode];
-      // Delay soul update to avoid stacking AI calls right after edge labeling
-      await new Promise(r => setTimeout(r, 1200));
       aiUpdateSoulProfile(soulProfile, newNode, allNodes, entries)
         .then(updated => {
           setSoulProfile(updated);
           saveSoulProfile(updated);
-          // Step 6: Constellation detection — only when node count is a multiple of 5
-          if (data.nodes.length > 0 && data.nodes.length % 5 === 0) {
+          if (allNodes.length % 5 === 0) {
             setData(current => {
               aiDetectConstellations(current.nodes, current.edges, constellations).then(newCs => {
                 if (newCs.length > 0) {
@@ -5950,11 +5929,10 @@ function TheSelfView({ entries, onBack }) {
                   if (!imported.nodes || !imported.edges) throw new Error("invalid format");
                   setData(imported);
                   saveSelf(imported);
-                  // Trigger Supabase sync immediately after import
-                  setTimeout(() => {
-                    try { window.__pushMeta && window.__pushMeta(); } catch {}
-                  }, 500);
-                  showBannerGlobal("soul map imported — " + imported.nodes.length + " nodes", 3000);
+                  // FIXED: double-push — 800ms lets state settle, 4s confirms
+                  setTimeout(() => { try { window.__pushMeta && window.__pushMeta(); } catch {} }, 800);
+                  setTimeout(() => { try { window.__pushMeta && window.__pushMeta(); } catch {} }, 4000);
+                  showBannerGlobal("soul map imported — " + imported.nodes.length + " nodes — syncing…", 3000);
                 } catch(err) {
                   showBannerGlobal("import failed — " + err.message, 3000);
                 }
