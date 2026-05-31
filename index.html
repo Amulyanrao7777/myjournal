@@ -125,8 +125,8 @@ const NOTES_KEY      = "myjournal_notes_v1";
 const DRAFT_KEY      = "myjournal_draft_v1";
 const SIGNATURE_KEY  = "myjournal_signature_v1";
 const SPEECH_LANG_KEY= "myjournal_speech_lang_v1";
-const GEMINI_MODEL_PRO   = "gemini-2.0-flash"; // free tier, 15 RPM — all AI calls
-const GEMINI_MODEL_FLASH = "gemini-2.0-flash"; // same model, free tier
+const GEMINI_MODEL_PRO   = "gemini-2.5-flash-preview-05-20"; // your provisioned model
+const GEMINI_MODEL_FLASH = "gemini-2.5-flash-preview-05-20"; // your provisioned model
 const GEMINI_KEY_STORAGE = "myjournal_gemini_key_v1";
 
 const isValidGeminiKey = (k) => {
@@ -4245,7 +4245,7 @@ function SettingsView({ syncConfig, lockConfig, signature, speechLang, activeThe
               showBanner("testing connection…");
               try {
                 const res = await fetch(
-                  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${k}`,
+                  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${k}`,
                   { method:"POST", headers:{"Content-Type":"application/json"},
                     body: JSON.stringify({ contents:[{role:"user",parts:[{text:"Reply with only the word: working"}]}], generationConfig:{maxOutputTokens:10} }) }
                 );
