@@ -38,7 +38,7 @@ html,body{height:100%;background:var(--bg);font-family:'Lora',Georgia,serif;}
   z-index:9999;transition:transform 0.3s ease;pointer-events:none;white-space:nowrap;
 }
 #sync-banner.show{transform:translateX(-50%) translateY(0);}
-#sync-banner.rate-limit{background:#b85030;}
+#sync-banner.rate-limit{background:#b85030;max-width:500px;text-align:center;}
 
 /* ── PAGE ANIMATIONS ── */
 @keyframes pageReveal{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
@@ -810,7 +810,7 @@ const _callGeminiRaw = async (model, systemPrompt, userMessage, maxTokens=1000) 
 // Retry with exponential backoff on 429
 const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => {
   const isPro = model.includes("2.5");
-  // FIXED: generous retry delays for free tier (15 RPM)
+  // FIX 4: retry delays for Gemini free tier (15 req/min, 60s window)
   const delays = isPro ? [15000, 35000, 65000] : [12000, 30000, 60000];
   let lastErr;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
@@ -822,7 +822,7 @@ const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => 
       if (e.status !== 429) throw e; // only retry on rate limit
     }
   }
-  throw new Error("Gemini rate limit — free tier: 15 req/min. Wait ~60s and try again, or upgrade at aistudio.google.com");
+  throw new Error("Gemini rate limit — free tier: 15 req/min. Wait ~60s then retry. Upgrade key at aistudio.google.com");
 };
 // Pro: deep reasoning — serialized so calls never fire simultaneously
 // Serialized AI call queue — enforces minimum 4s between calls (stays under 15 RPM)
@@ -1500,13 +1500,14 @@ function App() {
         if (importedSig) { setSignature(importedSig); saveSignature(importedSig); }
         if (importedTheme) { setActiveTheme(importedTheme); saveThemePref(importedTheme); applyTheme(importedTheme); }
         if (importedCover) { setCover(importedCover); saveCover(importedCover); }
-        showBanner("imported " + parts.join(" + ") + " ✓ — pushing to cloud…", 1500);
-        // FIXED: import was saving to localStorage only, never reaching Supabase
+        showBanner("imported " + parts.join(" + ") + " ✓ — syncing to cloud…", 1500);
+        // FIX 7: import was saving to localStorage only, never reaching Supabase.
+        // The normal debounced push doesn't fire from a file input handler.
         setTimeout(async () => {
           const cfg = syncConfigRef.current;
-          if (!cfg) { showBanner("imported " + parts.join(" + ") + " ✓ (no cloud sync configured)", 3000); return; }
+          if (!cfg) { showBanner("imported ✓ (no cloud sync configured)", 3000); return; }
           try {
-            const latest = loadEntries();
+            const latest = loadEntries(); // read fresh after React state settles
             await syncToCloud(cfg, latest);
             if (typeof window.__pushMeta === "function") window.__pushMeta();
             showBanner("imported + synced to cloud ✓", 3000);
@@ -4239,6 +4240,24 @@ function SettingsView({ syncConfig, lockConfig, signature, speechLang, activeThe
         {!geminiKeyError && (getGeminiKey() ? (
           <div style={{ marginTop:8, fontFamily:"'Cormorant Garamond',serif", fontSize:12, color:"var(--ink-faint)", display:"flex", alignItems:"center", gap:8 }}>
             <span style={{ color:"var(--mood-clear)" }}>✓ key saved</span>
+            <button onClick={async () => {
+              const k = getGeminiKey(); if (!k) return;
+              showBanner("testing connection…");
+              try {
+                const res = await fetch(
+                  `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${k}`,
+                  { method:"POST", headers:{"Content-Type":"application/json"},
+                    body: JSON.stringify({ contents:[{role:"user",parts:[{text:"Reply with only the word: working"}]}], generationConfig:{maxOutputTokens:10} }) }
+                );
+                if (res.status === 429) { showBanner("key valid but rate limited — wait ~60s", 4000); return; }
+                if (res.status === 400) { showBanner("key rejected (400) — check key at aistudio.google.com", 4000); return; }
+                if (res.status === 403) { showBanner("key forbidden (403) — wrong project or scope", 4000); return; }
+                if (!res.ok) { showBanner("connection error: " + res.status, 4000); return; }
+                const d = await res.json();
+                const txt = (d?.candidates?.[0]?.content?.parts?.[0]?.text || "").toLowerCase();
+                showBanner(txt.includes("work") ? "AI connected ✓ — key is working" : "AI responded ✓ (" + txt.trim().slice(0,30) + ")", 3000);
+              } catch(e) { showBanner("connection failed: " + e.message, 4000); }
+            }} style={{ background:"none", border:"1px solid var(--rule)", borderRadius:8, cursor:"pointer", color:"var(--ink-soft)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:"3px 10px", letterSpacing:"0.04em" }}>test connection</button>
             <button onClick={() => { saveGeminiKey(""); setGeminiKey(""); setGeminiKeyError(""); }} style={{ background:"none", border:"none", cursor:"pointer", color:"var(--ink-ghost)", fontFamily:"'Cormorant Garamond',serif", fontSize:11, padding:0, letterSpacing:"0.04em" }}>remove</button>
           </div>
         ) : (
@@ -5011,10 +5030,35 @@ const scoreToStrength = (score) => {
   return null; // no connection
 };
 
-// aiSemanticScore STUBBED — was calling _callGeminiRaw() directly,
-// bypassing the queue and causing 429 bursts on every node add.
-// scoreConnection() structural ordering is sufficient. Stub kept for safety.
-const aiSemanticScore = async (newNode, candidateNodes, feedback) => { return {}; };
+// Step 2b: LLM-as-similarity-judge — batched semantic scoring for top candidates
+// Supplements structural scoring with genuine semantic understanding
+const aiSemanticScore = async (newNode, candidateNodes, feedback) => {
+  if (!candidateNodes.length) return {};
+  // Build feedback context for soul profile bias
+  const fb = feedback || { accepted: [], rejected: [] };
+  const acceptedCount = (fb.accepted || []).length;
+  const rejectedCount = (fb.rejected || []).length;
+  const feedbackCtx = (acceptedCount + rejectedCount > 4)
+    ? `\n\nThis person has accepted ${acceptedCount} and rejected ${rejectedCount} AI-suggested connections. Calibrate accordingly.`
+    : "";
+
+  const pairs = candidateNodes.map((n, i) =>
+    `Pair ${i+1}: "${newNode.name}" [${(newNode.fingerprint?.themes||[]).join(", ")}] ↔ "${n.name}" [${(n.fingerprint?.themes||n.tags||[]).join(", ")}]`
+  ).join("\n");
+
+  const system = `You are judging semantic resonance between nodes in someone's inner world map. For each pair, rate how deeply they resonate — not surface similarity but genuine emotional or archetypal echo. Return ONLY a JSON array of numbers 0–1, one per pair, no other text.${feedbackCtx}`;
+  const prompt = `Rate these pairs (0=no resonance, 1=deep resonance):\n${pairs}`;
+
+  try {
+    const raw = await callClaude(system, prompt, 200);
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const scores = JSON.parse(clean);
+    if (!Array.isArray(scores)) return {};
+    const result = {};
+    candidateNodes.forEach((n, i) => { result[n.id] = typeof scores[i] === "number" ? scores[i] : 0; });
+    return result;
+  } catch { return {}; }
+};
 
 // Soul interrogation — periodic question surfaced to the user
 const aiSoulQuestion = async (soulProfile, nodes) => {
@@ -5147,16 +5191,24 @@ const aiDetectConstellations = async (nodes, edges, existingConstellations) => {
 const aiSuggestConnections = async (newNode, existingNodes, soulProfile, feedback) => {
   if (!existingNodes.length) return [];
 
-  // Pure structural scoring — zero extra API calls.
-  // Semantic judge removed (was bypassing queue causing 429 bursts).
+  // Score all existing nodes structurally (includes temporal weighting)
   const scored = existingNodes.map(n => ({
     id: n.id,
     score: scoreConnection(newNode, n),
     node: n,
   })).filter(s => s.score >= 0.04).sort((a,b)=>b.score-a.score);
 
-  if (scored.length > 0) {
-    return scored.slice(0,5).map(s => ({ id: s.id, strength: scoreToStrength(s.score) })).filter(s=>s.strength);
+  // If we have good fingerprint data, use scoring + semantic judge
+  const hasFingerprint = (newNode.fingerprint?.emotional||[]).length > 0;
+  if (hasFingerprint && scored.length > 0) {
+    const top = scored.slice(0, 8); // semantic judge over top 8 structural candidates
+    const semanticScores = await aiSemanticScore(newNode, top.map(s=>s.node), feedback).catch(()=>({}));
+    // Blend structural + semantic (60/40)
+    const blended = top.map(s => {
+      const sem = semanticScores[s.id] ?? s.score;
+      return { id: s.id, score: s.score * 0.6 + sem * 0.4, node: s.node };
+    }).sort((a,b)=>b.score-a.score);
+    return blended.slice(0,5).map(s => ({ id: s.id, strength: scoreToStrength(s.score) })).filter(s=>s.strength);
   }
 
   // Fallback: ask AI using names + context
@@ -5437,11 +5489,13 @@ function TheSelfView({ entries, onBack }) {
     if (data.nodes.length <= nodeCountOnMountRef.current) return;
     const existing = loadSoulQuestion();
     const sevenDaysAgo = Date.now() - 7 * 86400000;
-    if (existing && existing.generatedAt > sevenDaysAgo) return; // FIXED: max once/7 days
+    if (existing && existing.generatedAt > sevenDaysAgo) return; // FIX: max once/7 days (was 1 day)
     if (soulQuestionFiredRef.current) return;
     soulQuestionFiredRef.current = true;
-    // FIXED: removed setTimeout(3000) that bypassed the queue
-    // aiSoulQuestion uses callClaude() internally so it's already queued
+    // FIX 3: removed setTimeout(3000ms) timing bomb.
+    // aiSoulQuestion uses callClaude internally — it's already queue-aware.
+    // The 3s timer was injecting a raw call mid-queue at a fixed wall-clock
+    // time, racing with whatever else was running.
     aiSoulQuestion(soulProfile, data.nodes).then(q => {
       if (!q) return;
       const withTs = { ...q, generatedAt: Date.now(), answered: false };
@@ -5622,13 +5676,13 @@ function TheSelfView({ entries, onBack }) {
     setAddPhase("connecting");
     const suggestions = await aiSuggestConnections(newNode, data.nodes, soulEnabled ? soulProfile : null, feedback).catch(()=>[]);
 
-    // Step 3: Label edges — queue handles all spacing, no manual delays needed
-    // FIXED: removed 600ms gaps that were fighting the queue's own timing
+    // Step 3: Label edges — stagger them to avoid burst 429s
     setAddPhase("weaving");
     const newEdges = [];
     for (const { id: targetId, strength } of suggestions.slice(0,3)) {
       const target = data.nodes.find(n=>n.id===targetId);
       if (!target) continue;
+      await new Promise(r => setTimeout(r, 600));
       const label = await aiEdgeLabel(newNode, target).catch(()=>"");
       newEdges.push({ id:`e_${Date.now()}_${Math.random().toString(36).slice(2,4)}`, from:id, to:targetId, label, strength: strength||"faint", aiSuggested:true });
     }
@@ -5640,8 +5694,10 @@ function TheSelfView({ entries, onBack }) {
       return { nodes: newNodes, edges: [...evolvedEdges, ...newEdges] };
     });
 
-    // Step 5: Soul profile — FIXED: no setTimeout, properly queue-routed
-    // Was: await new Promise(r => setTimeout(r, 1200)) bypassed queue = parallel 429
+    // FIX 2: Soul profile — removed setTimeout(1200ms) timing bomb.
+    // That 1200ms timer fired while call #1 was still mid-flight, causing
+    // a parallel Gemini request = instant 429. aiUpdateSoulProfile calls
+    // callClaude internally so it's already queue-aware — no manual delay needed.
     if (soulEnabled) {
       const allNodes = [...data.nodes, newNode];
       aiUpdateSoulProfile(soulProfile, newNode, allNodes, entries)
@@ -5929,7 +5985,7 @@ function TheSelfView({ entries, onBack }) {
                   if (!imported.nodes || !imported.edges) throw new Error("invalid format");
                   setData(imported);
                   saveSelf(imported);
-                  // FIXED: double-push — 800ms lets state settle, 4s confirms
+                  // FIX 8: double-push — 800ms lets state settle, 4s confirms upload
                   setTimeout(() => { try { window.__pushMeta && window.__pushMeta(); } catch {} }, 800);
                   setTimeout(() => { try { window.__pushMeta && window.__pushMeta(); } catch {} }, 4000);
                   showBannerGlobal("soul map imported — " + imported.nodes.length + " nodes — syncing…", 3000);
