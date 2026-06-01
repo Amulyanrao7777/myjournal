@@ -846,7 +846,36 @@ const callClaude = (systemPrompt, userMessage, maxTokens=1000) => {
   // Return THIS call's promise so the caller gets the right result
   return myCall;
 };
-const callClaudeFlash = callClaude; // same queue, same model, same rate limit
+const callClaudeFlash = callClaude;
+
+// ── Robust JSON extractor ─────────────────────────────────────────────────────
+// Gemini 2.5 Flash sometimes wraps JSON in <think>...</think> blocks or adds
+// preamble text. This finds the first valid JSON object or array in any response.
+const extractJSON = (raw) => {
+  if (!raw) throw new Error("empty response");
+  // Try direct parse first (fastest path)
+  try { return JSON.parse(raw.trim()); } catch {}
+  // Strip markdown fences
+  let s = raw.replace(/^```json\s*/im, "").replace(/^```\s*/im, "").replace(/\s*```$/im, "").trim();
+  try { return JSON.parse(s); } catch {}
+  // Strip <think>...</think> blocks (Gemini 2.5 Flash thinking tokens)
+  s = s.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+  try { return JSON.parse(s); } catch {}
+  // Find first { or [ and extract from there
+  const objStart = s.indexOf("{");
+  const arrStart = s.indexOf("[");
+  const start = objStart === -1 ? arrStart : arrStart === -1 ? objStart : Math.min(objStart, arrStart);
+  if (start === -1) throw new Error("no JSON found in response");
+  const lastObj = s.lastIndexOf("}");
+  const lastArr = s.lastIndexOf("]");
+  const end = Math.max(lastObj, lastArr);
+  if (end === -1 || end < start) throw new Error("malformed JSON in response");
+  try { return JSON.parse(s.slice(start, end + 1)); } catch(e) {
+    throw new Error("JSON parse failed: " + e.message);
+  }
+};
+// ─────────────────────────────────────────────────────────────────────────────
+ // same queue, same model, same rate limit
 
 const shapeEntry = async (rawText) => {
   if (!rawText || !rawText.trim()) throw new Error("nothing to shape");
@@ -873,16 +902,15 @@ SHAPING RULES — follow these exactly:
 - ONLY return the JSON object, nothing else.`;
 
   const raw = await callClaude(system, rawText.slice(0, 4000), 1400);
-  const cleaned = raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
   try {
-    const parsed = JSON.parse(cleaned);
+    const parsed = extractJSON(raw);
     if (!parsed.heading || !parsed.shaped || !parsed.mood) throw new Error("missing fields");
     if (!MOOD_COLORS[parsed.mood]) parsed.mood = "reflective";
     if (!Array.isArray(parsed.connectedThemes)) parsed.connectedThemes = [];
     return parsed;
   } catch(err) {
-    console.error("shapeEntry parse failed:", err, "raw:", cleaned.slice(0,200));
-    throw new Error("could not parse Claude's response — try again");
+    console.error("shapeEntry parse failed:", err, "raw:", raw?.slice(0,200));
+    throw new Error("could not parse response — try again");
   }
 };
 
@@ -915,8 +943,7 @@ Return ONLY valid JSON:
 Only return the JSON.`;
 
   const raw = await callClaude(system, entrySummaries, 400);
-  const cleaned = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
-  try { return JSON.parse(cleaned); } catch { return null; }
+  try { return extractJSON(raw); } catch { return null; }
 };
 
 // ─── HANDWRITING OCR ──────────────────────────────────────────────────────────
@@ -4643,7 +4670,7 @@ Only return the JSON.`;
       const clean = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
       setSummary(JSON.parse(clean));
     } catch(e) {
-      setError("couldn't generate summary — try again");
+      setError("couldn't generate summary — " + (e.message||"try again"));
     } finally { setLoading(false); }
   };
 
@@ -4959,13 +4986,12 @@ Return ONLY valid JSON:
 }`;
 
   const raw = await callClaude(system, `Name: "${name}"${personalBlock}${journalBlock}${soulCtx}`, 350);
-  const clean = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
   try {
-    const p = JSON.parse(clean);
+    const p = extractJSON(raw);
     if (!NODE_CATEGORIES[p.category]) p.category = "other";
     return p;
   } catch(e) {
-    console.error("aiFingerprint parse failed. raw response:", raw?.slice(0,300), "error:", e.message);
+    console.error("aiFingerprint parse failed:", e.message, raw?.slice(0,200));
     return { category:"other", emotional:[], themes:[], archetype:"other", reflection:"Something worth keeping." };
   }
 };
@@ -5220,9 +5246,8 @@ const aiSuggestConnections = async (newNode, existingNodes, soulProfile, feedbac
 Return ONLY a JSON array: [{"id":"node_id","strength":"strong|faint|whisper"}]. Max 5. Return [] if nothing truly resonates.`;
   const prompt = `New node: "${newNode.name}" (${newNode.category})\nEmotional: ${(newNode.fingerprint?.emotional||newNode.tags||[]).join(", ")}\nThemes: ${(newNode.fingerprint?.themes||[]).join(", ")}\nArchetype: ${newNode.fingerprint?.archetype||""}\n${soulCtx}\n\nExisting nodes:\n${nodeList}`;
   const raw = await callClaude(system, prompt, 200);
-  const clean = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
   try {
-    const arr = JSON.parse(clean);
+    const arr = extractJSON(raw);
     if (!Array.isArray(arr)) return [];
     return arr.filter(item => item && existingNodes.find(n=>n.id===item.id))
               .map(item => ({ id: item.id, strength: item.strength || "faint" }));
@@ -5261,8 +5286,7 @@ Return ONLY valid JSON:
 }`;
   const prompt = `Their map (recent nodes):\n${nodeDigest}\n\nJournal context:\n${journalContext}${currentCtx}`;
   const raw = await callClaude(system, prompt, 400);
-  const clean = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
-  try { return JSON.parse(clean); }
+  try { return extractJSON(raw); }
   catch { return currentProfile; }
 };
 
