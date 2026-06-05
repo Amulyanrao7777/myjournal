@@ -819,7 +819,7 @@ const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => 
       return await _callGeminiRaw(model, systemPrompt, userMessage, maxTokens);
     } catch(e) {
       lastErr = e;
-      if (e.status !== 429) throw e; // only retry on rate limit
+      if (e.status !== 429 && e.status !== 503) throw e; // retry on rate limit OR server overload
     }
   }
   throw new Error("Gemini rate limit — free tier: 15 req/min. Wait ~60s then retry. Upgrade key at aistudio.google.com");
