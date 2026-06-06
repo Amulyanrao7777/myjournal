@@ -810,8 +810,8 @@ const _callGeminiRaw = async (model, systemPrompt, userMessage, maxTokens=1000) 
 // Retry with exponential backoff on 429
 const _callGemini = async (model, systemPrompt, userMessage, maxTokens=1000) => {
   const isPro = model.includes("2.5");
-  // FIX 4: retry delays for Gemini free tier (15 req/min, 60s window)
-  const delays = isPro ? [15000, 35000, 65000] : [12000, 30000, 60000];
+  // Retry delays: handles both 429 (rate limit) and 503 (server overload)
+  const delays = isPro ? [20000, 45000, 90000] : [15000, 40000, 80000];
   let lastErr;
   for (let attempt = 0; attempt <= delays.length; attempt++) {
     try {
@@ -870,8 +870,15 @@ const extractJSON = (raw) => {
   const lastArr = s.lastIndexOf("]");
   const end = Math.max(lastObj, lastArr);
   if (end === -1 || end < start) throw new Error("malformed JSON in response");
-  try { return JSON.parse(s.slice(start, end + 1)); } catch(e) {
-    throw new Error("JSON parse failed: " + e.message);
+  // Try to fix truncated JSON by closing open strings/objects
+  const candidate = s.slice(start, end + 1);
+  try { return JSON.parse(candidate); } catch(e) {
+    // Attempt to close truncated JSON — add closing chars until it parses
+    const closers = ['"}', '"}}', '"}}}', '"}}}}'];
+    for (const c of closers) {
+      try { return JSON.parse(candidate + c); } catch {}
+    }
+    throw new Error("JSON truncated — increase token limit");
   }
 };
 // ─────────────────────────────────────────────────────────────────────────────
@@ -910,7 +917,7 @@ SHAPING RULES — follow these exactly:
     return parsed;
   } catch(err) {
     console.error("shapeEntry parse failed:", err, "raw:", raw?.slice(0,200));
-    throw new Error("could not parse response — try again");
+    throw new Error("couldn't parse response: " + (err.message||"try again"));
   }
 };
 
@@ -2500,7 +2507,7 @@ function ThreadView({ entry, allEntries, onBack, onOpen }) {
     analyzeThread(thread)
       .then(r => { setAnalysis(r); setLoading(false); })
       .catch(e => {
-        setError("couldn't analyze right now — try again later");
+        setError("couldn't analyze: " + (e.message || "try again"));
         setLoading(false);
       });
   }, [entry.id]);
@@ -4666,7 +4673,7 @@ Return ONLY valid JSON:
 Only return the JSON.`;
 
     try {
-      const raw = await callClaude(system, digest.slice(0, 3500), 500);
+      const raw = await callClaude(system, digest.slice(0, 3500), 1000);
       const clean = raw.replace(/^```json\s*/i,"").replace(/^```\s*/i,"").replace(/\s*```$/i,"").trim();
       setSummary(JSON.parse(clean));
     } catch(e) {
@@ -4751,20 +4758,18 @@ const aiReadTheSelf = async (nodes, edges, soulProfile, constellations) => {
 
   // Build a structured representation
   const nodeLines = nodes.map(n => {
+    // Trim per-node output so large maps (20+ nodes) don't exceed context
     const conns = edges
       .filter(e => e.from === n.id || e.to === n.id)
       .map(e => {
         const otherId = e.from === n.id ? e.to : e.from;
         const other = nodes.find(x => x.id === otherId);
-        const str = e.strength || "faint";
-        const lbl = e.label ? ` (${e.label})` : "";
-        return other ? `${other.name}${lbl} [${str}]` : null;
+        return other ? other.name : null;
       })
-      .filter(Boolean);
+      .filter(Boolean).slice(0, 3); // max 3 connections shown
     const parts = [`• ${n.name} [${n.category}]`];
-    if (n.note) parts.push(`note: "${n.note}"`);
-    if (n.fingerprint?.archetype) parts.push(`archetype: ${n.fingerprint.archetype}`);
-    if (conns.length) parts.push(`connects to: ${conns.join(", ")}`);
+    if (n.fingerprint?.archetype) parts.push(n.fingerprint.archetype);
+    if (conns.length) parts.push(conns.join(", "));
     return parts.join(" | ");
   }).join("\n");
 
@@ -5749,7 +5754,7 @@ function TheSelfView({ entries, onBack }) {
     setTimeout(() => setSelectedId(id), 200);
     } catch(err) {
       console.error("soul map add failed:", err);
-      _showBannerGlobal("soul map error — " + (err.message||"try again"), 3000);
+      _showBannerGlobal("add node failed — " + (err.message||"try again") + " (check Settings → test connection)", 5000);
     } finally {
       setAddLoading(false); setAddPhase("");
     }
@@ -5821,7 +5826,7 @@ function TheSelfView({ entries, onBack }) {
     const connected = connectedTo(selectedId);
     aiNodeInsight(node, connected, entries, soulEnabled ? soulProfile : null)
       .then(txt => setInsight(txt))
-      .catch(()=>setInsight(null))
+      .catch(e=>setInsight("couldn't load insight: " + (e.message||"try again")))
       .finally(()=>setInsightLoading(false));
   }, [selectedId]);
 
@@ -5916,7 +5921,7 @@ function TheSelfView({ entries, onBack }) {
       const result = await aiReadTheSelf(data.nodes, data.edges, soulProfile, constellations);
       setReadSelfData(result);
     } catch(e) {
-      setReadSelfError("couldn't generate reading — try again");
+      setReadSelfError("couldn't generate reading — " + (e.message || "try again"));
     } finally {
       setReadSelfLoading(false);
     }
